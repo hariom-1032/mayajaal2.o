@@ -18,17 +18,20 @@ export interface OperatorUser {
   token?: string;
 }
 
+
+
+
 export const DEMO_OPERATORS: OperatorUser[] = [
   {
     id: "op-rathore",
-    name: "Insp. K. Rathore",
-    rank: "Inspector / General Duty",
+    name: "Admin",
+    rank: "System Administrator / Shift Commander",
     badgeNumber: "BSF-9482-KR",
     sector: "Sector-04 (BOP Alpha)",
     role: "Shift Commander",
     clearanceLevel: "Level 4 (Top Secret / Restricted)",
     serviceBranch: "Border Security Force (BSF)",
-    avatarInitials: "KR",
+    avatarInitials: "AD",
     authenticatedAt: "2026-09-09T08:00:00Z",
     expiresAt: "2026-09-09T16:00:00Z",
   },
@@ -63,7 +66,7 @@ export const DEMO_OPERATORS: OperatorUser[] = [
 export const AUTHORIZED_PERSONNEL = [
   {
     ...DEMO_OPERATORS[0],
-    passwords: ["MAATRIX2026", "BSF@2026", "COMMANDER"],
+    passwords: ["MAATRIX2026", "BSF@2026", "COMMANDER", "ADMIN"],
   },
   {
     ...DEMO_OPERATORS[1],
@@ -193,6 +196,17 @@ export function getStoredOperator(): OperatorUser | null {
       return null;
     }
 
+    // Auto-update legacy officer name to Admin
+    if (parsed.name === "Insp. K. Rathore" || parsed.id === "op-rathore") {
+      parsed.name = "Admin";
+      if (parsed.avatarInitials === "KR") {
+        parsed.avatarInitials = "AD";
+      }
+      try {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(parsed));
+      } catch {}
+    }
+
     // Ensure session cookie is synced with valid localStorage session
     if (parsed.token && parsed.expiresAt) {
       setSessionCookie(parsed.token, new Date(parsed.expiresAt));
@@ -226,7 +240,7 @@ export function validateCredentials(
     (p) =>
       p.badgeNumber.toUpperCase() === cleanBadge ||
       p.id.toUpperCase() === cleanBadge ||
-      (cleanBadge === "ADMIN" && p.badgeNumber === "COMMANDER")
+      (cleanBadge === "ADMIN" && (p.id === "op-rathore" || p.name === "Admin" || p.badgeNumber === "COMMANDER"))
   );
 
   if (!found) {
@@ -266,6 +280,8 @@ export function useAuth() {
       if (!prev && !stored) return null;
       if (!prev || !stored) return stored;
       if (
+        prev.name === stored.name &&
+        prev.avatarInitials === stored.avatarInitials &&
         prev.badgeNumber === stored.badgeNumber &&
         prev.authenticatedAt === stored.authenticatedAt &&
         prev.expiresAt === stored.expiresAt &&

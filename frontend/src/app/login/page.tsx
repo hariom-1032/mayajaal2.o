@@ -216,7 +216,7 @@ function LoginFormCard() {
               }}
               className="text-slate-600 hover:text-slate-900 underline transition-colors"
             >
-              Reset to Commander
+              Reset to Admin
             </button>
           </div>
         </form>

@@ -27,15 +27,15 @@ router = APIRouter(
 AUTHORIZED_ROSTER = [
     {
         "id": "op-rathore",
-        "name": "Insp. K. Rathore",
+        "name": "Admin",
         "rank": "Inspector / General Duty",
         "badgeNumber": "BSF-9482-KR",
         "sector": "Sector-04 (BOP Alpha)",
         "role": "Shift Commander",
         "clearanceLevel": "Level 4 (Top Secret / Restricted)",
         "serviceBranch": "Border Security Force (BSF)",
-        "avatarInitials": "KR",
-        "passwords": ["MAATRIX2026", "BSF@2026", "COMMANDER"],
+        "avatarInitials": "AD",
+        "passwords": ["MAATRIX2026", "BSF@2026", "COMMANDER", "ADMIN"],
     },
     {
         "id": "op-sharma",
@@ -114,7 +114,7 @@ async def login(req: LoginRequest) -> SessionResponse:
         if (
             officer["badgeNumber"].upper() == clean_badge
             or officer["id"].upper() == clean_badge
-            or (clean_badge == "ADMIN" and officer["badgeNumber"] == "COMMANDER")
+            or (clean_badge == "ADMIN" and (officer["id"] == "op-rathore" or officer["name"] == "Admin" or officer["badgeNumber"] == "COMMANDER"))
         ):
             matched = officer
             break

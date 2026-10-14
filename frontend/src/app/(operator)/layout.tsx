@@ -671,11 +671,11 @@ export default function OperatorLayout({
               >
                 <div className="text-right hidden sm:block">
                   <div className="text-xs font-bold text-slate-900 leading-tight">
-                    {operator.name}
+                    {operator?.name || "Admin"}
                   </div>
                   <div className="text-[10px] font-medium text-emerald-700 flex items-center justify-end gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                    <span>{operator.role}</span>
+                    <span>{operator?.role || "Shift Commander"}</span>
                   </div>
                 </div>
 
@@ -683,7 +683,7 @@ export default function OperatorLayout({
                   <div
                     className="w-8 h-8 rounded-full bg-[#1e4b38] text-white flex items-center justify-center text-xs font-bold ring-2 ring-[#1e4b38]/20 shadow-xs select-none"
                   >
-                    {operator.avatarInitials}
+                    {operator?.avatarInitials || "AD"}
                   </div>
                   <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
                 </div>
@@ -697,17 +697,17 @@ export default function OperatorLayout({
                   {/* Officer Header */}
                   <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
                     <div className="w-10 h-10 rounded-xl bg-[#1e4b38] text-white flex items-center justify-center text-sm font-bold shadow-xs">
-                      {operator.avatarInitials}
+                      {operator?.avatarInitials || "AD"}
                     </div>
                     <div className="overflow-hidden">
                       <div className="text-xs font-bold text-slate-950 truncate">
-                        {operator.name}
+                        {operator?.name || "Admin"}
                       </div>
                       <div className="text-[10px] text-slate-500 truncate">
-                        {operator.rank}
+                        {operator?.rank || "System Administrator"}
                       </div>
                       <div className="text-[9px] font-mono text-emerald-800 font-semibold truncate">
-                        {operator.serviceBranch}
+                        {operator?.serviceBranch}
                       </div>
                     </div>
                   </div>

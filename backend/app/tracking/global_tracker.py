@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from app.pipeline.reid_service import reid_service
+from app.pipeline.uniface_service import uniface_service
 
 logger = logging.getLogger("SIH26187.GlobalTracker")
 
@@ -36,6 +37,8 @@ def calc_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
 class GlobalTrace:
     """
     Persistent global identity representing a person observed across one or more cameras.
+    Unifies Deep Appearance Whole-Body Re-ID (OSNet 512-D) and Facial Biometrics (UniFace ArcFace 512-D)
+    for Cross-Modal Tracking and persistent suspect recognition.
     """
 
     def __init__(
@@ -50,6 +53,11 @@ class GlobalTrace:
         suspect_name: Optional[str] = None,
         threat_level: Optional[str] = None,
         category: Optional[str] = None,
+        face_feature: Optional[np.ndarray] = None,
+        demographics: Optional[dict[str, Any]] = None,
+        attributes: Optional[dict[str, Any]] = None,
+        liveness: Optional[dict[str, Any]] = None,
+        fusion_mode: str = "BODY_ONLY",
     ) -> None:
         self.trace_id: str = trace_id
         self.feature: np.ndarray = feature
@@ -59,6 +67,19 @@ class GlobalTrace:
         self.last_camera_id: str = camera_id
         self.last_camera_name: str = camera_name
         self.total_sightings: int = 1
+
+        # Cross-Modal Face Biometric Bindings
+        self.face_feature: Optional[np.ndarray] = face_feature
+        self.face_feature_history: list[np.ndarray] = [face_feature] if face_feature is not None else []
+        self.demographics: Optional[dict[str, Any]] = demographics
+        self.attributes: Optional[dict[str, Any]] = attributes
+        self.liveness: Optional[dict[str, Any]] = liveness
+        self.has_face_fused: bool = face_feature is not None
+        self.fusion_mode: str = fusion_mode
+
+        self.last_body_score: float = 1.0
+        self.last_face_score: float = 1.0 if face_feature is not None else 0.0
+        self.last_fused_score: float = 1.0
 
         self.suspect_name: Optional[str] = suspect_name
         self.threat_level: Optional[str] = threat_level
@@ -75,6 +96,10 @@ class GlobalTrace:
                 "box": [round(float(v), 2) for v in box],
                 "confidence": round(float(confidence), 3),
                 "reid_score": 1.0,
+                "body_score": 1.0,
+                "face_score": 1.0 if face_feature is not None else 0.0,
+                "fusion_mode": fusion_mode,
+                "has_face": face_feature is not None,
             }
         ]
 
@@ -92,6 +117,10 @@ class GlobalTrace:
         confidence: float,
         reid_score: float,
         timestamp: float,
+        body_score: float = 1.0,
+        face_score: float = 0.0,
+        fusion_mode: str = "BODY_ONLY",
+        has_face: bool = False,
     ) -> None:
         self.waypoints.append(
             {
@@ -102,6 +131,10 @@ class GlobalTrace:
                 "box": [round(float(v), 2) for v in box],
                 "confidence": round(float(confidence), 3),
                 "reid_score": round(float(reid_score), 3),
+                "body_score": round(float(body_score), 3),
+                "face_score": round(float(face_score), 3),
+                "fusion_mode": fusion_mode,
+                "has_face": has_face,
             }
         )
         self.last_camera_id = camera_id
@@ -131,6 +164,91 @@ class GlobalTrace:
             if len(self.feature_history) > 5:
                 self.feature_history.pop(0)
 
+    def update_face_feature(self, new_face_feature: np.ndarray, alpha: float = 0.85) -> None:
+        """
+        Update the aggregated ArcFace facial feature using Exponential Moving Average (EMA).
+        Maintains a facial gallery history of up to 5 diverse captures.
+        """
+        if new_face_feature is None:
+            return
+        new_face = np.asarray(new_face_feature, dtype=np.float32).ravel()
+        norm = float(np.linalg.norm(new_face))
+        if norm > 1e-6:
+            new_face = new_face / norm
+
+        if self.face_feature is None:
+            self.face_feature = new_face
+            self.face_feature_history = [new_face]
+            self.has_face_fused = True
+            return
+
+        updated = alpha * self.face_feature + (1.0 - alpha) * new_face
+        u_norm = float(np.linalg.norm(updated))
+        if u_norm > 1e-6:
+            self.face_feature = (updated / u_norm).astype(np.float32)
+
+        is_distinct = True
+        for h in self.face_feature_history:
+            if float(np.dot(h, new_face)) > 0.90:
+                is_distinct = False
+                break
+        if is_distinct:
+            self.face_feature_history.append(new_face)
+            if len(self.face_feature_history) > 5:
+                self.face_feature_history.pop(0)
+        self.has_face_fused = True
+
+    def compute_cross_modal_similarity(
+        self,
+        cand_body: np.ndarray,
+        cand_face: Optional[np.ndarray] = None,
+    ) -> tuple[float, str, float, float]:
+        """
+        Compute multi-modal cross-camera similarity uniting OSNet body ReID (512-D)
+        and UniFace ArcFace face recognition (512-D).
+        
+        Returns:
+            tuple: (fused_score, fusion_mode, body_similarity, face_similarity)
+                   where fusion_mode in ("CROSS_MODAL_FUSED", "BODY_ONLY")
+        """
+        # 1. Whole-body appearance similarity
+        b_cand = np.asarray(cand_body, dtype=np.float32).ravel()
+        b_norm = float(np.linalg.norm(b_cand))
+        if b_norm > 1e-6:
+            b_cand = b_cand / b_norm
+
+        all_b_feats = [self.feature] + self.feature_history
+        body_scores = [float(np.dot(f, b_cand)) for f in all_b_feats]
+        body_sim = max(body_scores) if body_scores else 0.0
+
+        # 2. Face appearance similarity
+        face_sim = 0.0
+        has_face_match = False
+        if cand_face is not None and self.face_feature is not None:
+            f_cand = np.asarray(cand_face, dtype=np.float32).ravel()
+            f_norm = float(np.linalg.norm(f_cand))
+            if f_norm > 1e-6:
+                f_cand = f_cand / f_norm
+
+            all_f_feats = [self.face_feature] + self.face_feature_history
+            face_scores = [float(np.dot(f, f_cand)) for f in all_f_feats]
+            face_sim = max(face_scores) if face_scores else 0.0
+            has_face_match = True
+
+        # 3. Decision Fusion Formula:
+        # If both camera captures reveal facial features, fuse both signals:
+        #   Score_fused = 0.55 * Sim_face + 0.45 * Sim_body
+        # If suspect is looking away or face is occluded:
+        #   Score_fused = Sim_body
+        if has_face_match:
+            fused_score = 0.55 * face_sim + 0.45 * body_sim
+            mode = "CROSS_MODAL_FUSED"
+        else:
+            fused_score = body_sim
+            mode = "BODY_ONLY"
+
+        return float(fused_score), mode, float(body_sim), float(face_sim)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert GlobalTrace into JSON-serializable representation."""
         duration_sec = round(self.last_seen - self.first_seen, 1)
@@ -151,6 +269,14 @@ class GlobalTrace:
             "threat_level": self.threat_level,
             "category": self.category,
             "waypoints_count": len(self.waypoints),
+            "has_face_fused": self.has_face_fused,
+            "fusion_mode": self.fusion_mode,
+            "demographics": self.demographics,
+            "attributes": self.attributes,
+            "liveness": self.liveness,
+            "last_body_score": round(self.last_body_score, 3),
+            "last_face_score": round(self.last_face_score, 3),
+            "last_fused_score": round(self.last_fused_score, 3),
         }
 
 
@@ -188,12 +314,16 @@ class GlobalTraceManager:
         suspect_name: Optional[str] = None,
         threat_level: Optional[str] = None,
         category: Optional[str] = None,
+        face_feature: Optional[np.ndarray] = None,
+        extract_face: bool = True,
     ) -> tuple[str, bool, float]:
         """
         Assign or update a unified Global Trace ID for a detected person.
+        Performs Cross-Modal Multi-Camera Fusion uniting whole-body OSNet Re-ID (512-D)
+        and UniFace ArcFace facial biometrics (512-D).
 
         Returns:
-            tuple of (trace_id, is_cross_camera_match, reid_confidence_score)
+            tuple of (trace_id, is_cross_camera_match, fused_reid_score)
         """
         now = time.time()
         map_key = (camera_id, int(local_track_id))
@@ -201,7 +331,35 @@ class GlobalTraceManager:
         with self.lock:
             self._prune_inactive_locked(now)
 
-            # Case 1: Local track is ALREADY mapped to an existing GlobalTrace
+            # Pre-extract crop coordinates
+            h, w = frame_bgr.shape[:2]
+            x1, y1, x2, y2 = [int(v) for v in box]
+            x1 = max(0, min(w - 1, x1))
+            y1 = max(0, min(h - 1, y1))
+            x2 = max(0, min(w, x2))
+            y2 = max(0, min(h, y2))
+            crop = frame_bgr[y1:y2, x1:x2]
+
+            # ── 1. Facial Biometric Extraction & FAISS Match (Cross-Modal Fusion) ──
+            cand_face_feature = face_feature
+            cand_demographics = None
+            cand_attributes = None
+            cand_liveness = None
+
+            if cand_face_feature is None and extract_face and crop.size > 0 and uniface_service.is_ready():
+                face_info = uniface_service.extract_face_from_person_crop(crop)
+                if face_info is not None:
+                    cand_face_feature = face_info.get("embedding")
+                    cand_demographics = face_info.get("demographics")
+                    cand_attributes = face_info.get("attributes")
+                    cand_liveness = face_info.get("liveness")
+                    # If facial recognition matched an enrolled suspect in FAISS, bind identity
+                    if face_info.get("is_suspect") and not suspect_name:
+                        suspect_name = face_info.get("suspect_name")
+                        threat_level = face_info.get("threat_level") or "HIGH"
+                        category = face_info.get("category") or "Wanted / BOLO"
+
+            # ── Case 1: Local track is ALREADY mapped to an existing GlobalTrace ──
             if map_key in self._camera_local_map:
                 trace_id = self._camera_local_map[map_key]
                 trace = self._traces.get(trace_id)
@@ -209,6 +367,16 @@ class GlobalTraceManager:
                     trace.last_seen = now
                     trace.total_sightings += 1
                     self._local_last_seen[map_key] = now
+
+                    # Attach facial feature and attributes if newly acquired
+                    if cand_face_feature is not None:
+                        trace.update_face_feature(cand_face_feature)
+                        if not trace.demographics and cand_demographics:
+                            trace.demographics = cand_demographics
+                        if not trace.attributes and cand_attributes:
+                            trace.attributes = cand_attributes
+                        if not trace.liveness and cand_liveness:
+                            trace.liveness = cand_liveness
 
                     # Attach suspect identity if newly discovered
                     if suspect_name and not trace.suspect_name:
@@ -219,15 +387,7 @@ class GlobalTraceManager:
 
                     return trace.trace_id, False, 1.0
 
-            # Case 2: New local track in this camera -> Perform Cross-Camera Re-ID
-            h, w = frame_bgr.shape[:2]
-            x1, y1, x2, y2 = [int(v) for v in box]
-            x1 = max(0, min(w - 1, x1))
-            y1 = max(0, min(h - 1, y1))
-            x2 = max(0, min(w, x2))
-            y2 = max(0, min(h, y2))
-
-            crop = frame_bgr[y1:y2, x1:x2]
+            # ── Case 2: New local track in this camera -> Cross-Camera Re-ID ──
             feature = reid_service.extract_crop(crop)
 
             if feature is None:
@@ -235,9 +395,12 @@ class GlobalTraceManager:
                 trace_id = f"TRC-TEMP-{int(now) % 10000}"
                 return trace_id, False, 0.0
 
-            # Search existing active traces for cross-camera appearance match
+            # Search existing active traces for multi-modal cross-camera appearance match
             best_match: Optional[GlobalTrace] = None
             best_score: float = -1.0
+            best_mode: str = "BODY_ONLY"
+            best_b_score: float = 0.0
+            best_f_score: float = 0.0
 
             for candidate in self._traces.values():
                 # Spatial Exclusivity Filter:
@@ -254,22 +417,48 @@ class GlobalTraceManager:
                 if is_currently_on_same_camera:
                     continue
 
-                # Multi-shot feature comparison
-                cand_features = [candidate.feature] + candidate.feature_history
-                scores = [reid_service.compute_similarity(feature, f) for f in cand_features]
-                cand_max_score = max(scores) if scores else -1.0
+                # Compute Multi-Modal Cross-Modal Similarity Fusion
+                fused_sc, f_mode, b_sc, fc_sc = candidate.compute_cross_modal_similarity(
+                    cand_body=feature,
+                    cand_face=cand_face_feature,
+                )
 
-                if cand_max_score > best_score:
-                    best_score = cand_max_score
+                if fused_sc > best_score:
+                    best_score = fused_sc
                     best_match = candidate
+                    best_mode = f_mode
+                    best_b_score = b_sc
+                    best_f_score = fc_sc
 
             # Decision Boundary:
-            if best_match is not None and best_score >= self.similarity_threshold:
+            # Dual confirmation from both face and body lowers risk of false positives,
+            # so fused score threshold is 0.60; single-modal body ReID threshold is 0.65.
+            effective_threshold = (
+                min(self.similarity_threshold, 0.60)
+                if best_mode == "CROSS_MODAL_FUSED"
+                else self.similarity_threshold
+            )
+
+            if best_match is not None and best_score >= effective_threshold:
                 # Cross-Camera Match Found!
                 trace = best_match
                 trace.last_seen = now
                 trace.total_sightings += 1
                 trace.update_feature(feature)
+
+                if cand_face_feature is not None:
+                    trace.update_face_feature(cand_face_feature)
+                if cand_demographics and not trace.demographics:
+                    trace.demographics = cand_demographics
+                if cand_attributes and not trace.attributes:
+                    trace.attributes = cand_attributes
+                if cand_liveness and not trace.liveness:
+                    trace.liveness = cand_liveness
+
+                trace.last_body_score = best_b_score
+                trace.last_face_score = best_f_score
+                trace.last_fused_score = best_score
+                trace.fusion_mode = best_mode
 
                 # Record new camera waypoint transition
                 if trace.last_camera_id != camera_id:
@@ -280,17 +469,25 @@ class GlobalTraceManager:
                         confidence=confidence,
                         reid_score=best_score,
                         timestamp=now,
+                        body_score=best_b_score,
+                        face_score=best_f_score,
+                        fusion_mode=best_mode,
+                        has_face=cand_face_feature is not None,
                     )
                     logger.info(
-                        "🚨 CROSS-CAMERA RE-ID SUCCESS: %s transitioned from %s to %s (Score=%.3f, Local ID #%d)",
+                        "🚨 CROSS-CAMERA RE-ID SUCCESS [%s]: %s transitioned from %s to %s "
+                        "(Fused=%.3f, Body=%.3f, Face=%.3f, Local ID #%d)",
+                        best_mode,
                         trace.trace_id,
                         trace.waypoints[-2]["camera_name"] if len(trace.waypoints) > 1 else "Unknown",
                         camera_name,
                         best_score,
+                        best_b_score,
+                        best_f_score,
                         local_track_id,
                     )
 
-                # Attach suspect if present
+                # Persist suspect identity (Suspect recognized on Cam 1 persists on Cam 2 via Body ReID!)
                 if suspect_name and not trace.suspect_name:
                     trace.suspect_name = suspect_name
                     trace.threat_level = threat_level or "HIGH"
@@ -316,12 +513,21 @@ class GlobalTraceManager:
                 suspect_name=suspect_name,
                 threat_level=threat_level,
                 category=category,
+                face_feature=cand_face_feature,
+                demographics=cand_demographics,
+                attributes=cand_attributes,
+                liveness=cand_liveness,
+                fusion_mode="CROSS_MODAL_FUSED" if cand_face_feature is not None else "BODY_ONLY",
             )
+            new_trace.last_body_score = 1.0
+            new_trace.last_face_score = 1.0 if cand_face_feature is not None else 0.0
+            new_trace.last_fused_score = 1.0
 
             self._traces[trace_id] = new_trace
             self._camera_local_map[map_key] = trace_id
             self._local_last_seen[map_key] = now
-            logger.info("New Global Trace initialized: %s on %s (Local ID #%d)", trace_id, camera_name, local_track_id)
+            logger.info("New Global Trace initialized: %s on %s (Local ID #%d, Mode: %s)",
+                        trace_id, camera_name, local_track_id, new_trace.fusion_mode)
             return trace_id, False, 1.0
 
     def get_trace(self, trace_id: str) -> Optional[GlobalTrace]:
@@ -354,6 +560,11 @@ class GlobalTraceManager:
             suspect_name = trace.suspect_name
             threat_level = trace.threat_level
             category = trace.category
+            has_face_fused = trace.has_face_fused
+            fusion_mode = trace.fusion_mode
+            demographics = trace.demographics
+            attributes = trace.attributes
+            liveness = trace.liveness
 
         cameras_map: dict[str, dict[str, Any]] = {}
         try:
@@ -402,6 +613,10 @@ class GlobalTraceManager:
                     "delta_distance_km": round(delta_km, 3),
                     "elapsed_time_minutes": elapsed_min,
                     "reid_score": wp.get("reid_score", 1.0),
+                    "body_score": wp.get("body_score", 1.0),
+                    "face_score": wp.get("face_score", 0.0),
+                    "fusion_mode": wp.get("fusion_mode", "BODY_ONLY"),
+                    "has_face": wp.get("has_face", False),
                     "confidence": wp.get("confidence", 0.0),
                 }
             )
@@ -420,6 +635,11 @@ class GlobalTraceManager:
             "last_seen_time": last_wp["time_str"] if last_wp else "",
             "waypoints": enriched_waypoints,
             "is_cross_camera": len({wp["camera_id"] for wp in enriched_waypoints}) > 1,
+            "has_face_fused": has_face_fused,
+            "fusion_mode": fusion_mode,
+            "demographics": demographics,
+            "attributes": attributes,
+            "liveness": liveness,
         }
 
     def _prune_inactive_locked(self, now: float) -> None:
