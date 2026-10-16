@@ -195,118 +195,18 @@ def test_global_trace_rest_api():
     print("\n[REST API PASS] Global trace endpoints verified successfully.")
 
 
-def test_face_to_body_cross_modal_fusion():
-    """Verify Face-to-Body Multi-Camera Cross-Modal Tracking (OSNet 512-D + ArcFace 512-D)."""
-    global_trace_manager.reset()
-
-    # Generate synthetic 512-D ArcFace normalized face feature for Suspect X
-    face_feat_x = np.random.randn(512).astype(np.float32)
-    face_feat_x /= np.linalg.norm(face_feat_x)
-
-    # Synthetic camera frame for Person X (Dark green tactical jacket, black pants)
-    frame_cam1 = np.zeros((480, 640, 3), dtype=np.uint8)
-    frame_cam1[50:250, 100:200, 1] = 170
-    frame_cam1[250:400, 100:200, :] = 20
-
-    # Step 1: Suspect X appears on Camera 1 (Checkpost Alpha) with BOTH face and body visible
-    tid1, is_cross1, score1 = global_trace_manager.update_track(
-        camera_id="cam_01",
-        camera_name="Checkpost Alpha",
-        local_track_id=101,
-        box=[100, 50, 200, 400],
-        frame_bgr=frame_cam1,
-        confidence=0.96,
-        suspect_name="Major Tariq",
-        threat_level="CRITICAL",
-        category="High Value Target",
-        face_feature=face_feat_x,
-    )
-    assert tid1 == "TRC-0001"
-    assert is_cross1 is False
-    trace1 = global_trace_manager.get_trace(tid1)
-    assert trace1.has_face_fused is True
-    assert trace1.fusion_mode == "CROSS_MODAL_FUSED"
-    assert trace1.is_suspect is True
-    assert trace1.suspect_name == "Major Tariq"
-
-    # Step 2: Suspect X walks to Camera 2 (Checkpost Bravo).
-    # Both face (slight angle change) and body are visible.
-    # Cross-Modal Fusion formula: Score_fused = 0.55 * Sim_face + 0.45 * Sim_body
-    noise = np.random.randn(512).astype(np.float32)
-    noise /= np.linalg.norm(noise)
-    face_feat_x_cam2 = 0.95 * face_feat_x + 0.05 * noise
-    face_feat_x_cam2 /= np.linalg.norm(face_feat_x_cam2)
-
-    frame_cam2 = np.zeros((480, 640, 3), dtype=np.uint8)
-    frame_cam2[50:250, 100:200, 1] = 165
-    frame_cam2[250:400, 100:200, :] = 25
-
-    tid2, is_cross2, score2 = global_trace_manager.update_track(
-        camera_id="cam_02",
-        camera_name="Checkpost Bravo",
-        local_track_id=202,
-        box=[100, 50, 200, 400],
-        frame_bgr=frame_cam2,
-        confidence=0.94,
-        face_feature=face_feat_x_cam2,
-    )
-    assert tid2 == "TRC-0001", f"Camera 2 must match trace TRC-0001, got {tid2}"
-    assert is_cross2 is True
-    trace2 = global_trace_manager.get_trace(tid2)
-    assert trace2.fusion_mode == "CROSS_MODAL_FUSED"
-    assert score2 >= 0.70, f"Expected fused score >= 0.70, got {score2}"
-    assert trace2.last_face_score > 0.85
-    assert trace2.last_body_score > 0.80
-
-    # Step 3: Suspect X walks to Camera 3 (Watchtower Delta) with FACE COMPLETELY OCCLUDED / TURNED AWAY
-    # face_feature is None! System must gracefully fall back to whole-body ReID while PRESERVING suspect identity.
-    frame_cam3 = np.zeros((480, 640, 3), dtype=np.uint8)
-    frame_cam3[50:250, 100:200, 1] = 168
-    frame_cam3[250:400, 100:200, :] = 22
-
-    tid3, is_cross3, score3 = global_trace_manager.update_track(
-        camera_id="cam_03",
-        camera_name="Watchtower Delta",
-        local_track_id=303,
-        box=[100, 50, 200, 400],
-        frame_bgr=frame_cam3,
-        confidence=0.91,
-        face_feature=None,  # Face occluded!
-    )
-    assert tid3 == "TRC-0001", f"Camera 3 must match trace TRC-0001 via body ReID, got {tid3}"
-    assert is_cross3 is True
-    trace3 = global_trace_manager.get_trace(tid3)
-    assert trace3.is_suspect is True, "Suspect identity must be preserved on Cam 3!"
-    assert trace3.suspect_name == "Major Tariq"
-    assert trace3.fusion_mode == "BODY_ONLY"
-
-    # Step 4: Verify Multi-Camera Trajectory Reconstruction with Waypoints
-    traj = global_trace_manager.get_trace_trajectory("TRC-0001")
-    assert traj["found"] is True
-    assert traj["total_sightings"] == 3
-    assert traj["is_cross_camera"] is True
-    assert traj["has_face_fused"] is True
-    assert traj["suspect_name"] == "Major Tariq"
-    assert traj["waypoints"][0]["camera_id"] == "cam_01"
-    assert traj["waypoints"][1]["fusion_mode"] == "CROSS_MODAL_FUSED"
-    assert traj["waypoints"][2]["fusion_mode"] == "BODY_ONLY"
-    print(f"\n[Cross-Modal Tracking PASS] Trace {tid1} tracked across 3 cameras with Face+Body multi-modal fusion and occlusion resilience!")
-
-
 if __name__ == "__main__":
     print("\n=======================================================")
     print(" Running Person Re-ID & Multi-Camera Tracking Tests ")
-    print("=======================================================")
+    print("=======================================================\n")
     test_reid_service_extraction()
-    print(" [1/6] test_reid_service_extraction: PASSED")
+    print(" [1/5] test_reid_service_extraction: PASSED")
     test_reid_similarity_discrimination()
-    print(" [2/6] test_reid_similarity_discrimination: PASSED")
+    print(" [2/5] test_reid_similarity_discrimination: PASSED")
     test_cross_camera_global_tracking()
-    print(" [3/6] test_cross_camera_global_tracking: PASSED")
+    print(" [3/5] test_cross_camera_global_tracking: PASSED")
     test_suspect_biometric_fusion_across_cameras()
-    print(" [4/6] test_suspect_biometric_fusion_across_cameras: PASSED")
+    print(" [4/5] test_suspect_biometric_fusion_across_cameras: PASSED")
     test_global_trace_rest_api()
-    print(" [5/6] test_global_trace_rest_api: PASSED")
-    test_face_to_body_cross_modal_fusion()
-    print(" [6/6] test_face_to_body_cross_modal_fusion: PASSED")
-    print("\n ALL 6 RE-ID & CROSS-MODAL FUSION TESTS PASSED! \n")
+    print(" [5/5] test_global_trace_rest_api: PASSED")
+    print("\n ALL 5 RE-ID & MULTI-CAMERA TESTS PASSED! \n")

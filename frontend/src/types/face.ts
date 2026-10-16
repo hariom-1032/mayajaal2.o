@@ -12,25 +12,6 @@ export interface EnrolledPerson {
   notes?: string;
 }
 
-export interface FaceDemographics {
-  gender?: string;
-  age_group?: string;
-  race?: string;
-}
-
-export interface FaceAttributes {
-  mask_prob?: number;
-  sunglasses_prob?: number;
-  eyeglasses_prob?: number;
-  has_disguise?: boolean;
-  disguise_labels?: string[];
-}
-
-export interface FaceLiveness {
-  is_real: boolean;
-  confidence: number;
-}
-
 export interface FaceDetection {
   name: string;
   is_known: boolean;
@@ -44,15 +25,10 @@ export interface FaceDetection {
   is_threat: boolean;
   threat_level?: string;
   category?: string;
-  engine?: string;
-  demographics?: FaceDemographics;
-  attributes?: FaceAttributes;
-  liveness?: FaceLiveness;
 }
 
 export interface FaceScanResponse {
   success: boolean;
-  engine?: string;
   face_count: number;
   faces: FaceDetection[];
   latency_ms: number;
@@ -64,12 +40,9 @@ export interface FaceEngineStatus {
   status: "ready" | "degraded";
   detector_loaded: boolean;
   recognizer_loaded: boolean;
-  uniface_ready?: boolean;
-  active_engine?: string;
   enrolled_count: number;
-  yunet_model?: string;
-  sface_model?: string;
-  uniface_models?: Record<string, string>;
+  yunet_model: string;
+  sface_model: string;
 }
 
 export interface FaceEvent {
@@ -82,10 +55,6 @@ export interface FaceEvent {
   is_threat?: boolean;
   threat_level?: string;
   category?: string;
-  demographics?: FaceDemographics;
-  attributes?: FaceAttributes;
-  liveness?: FaceLiveness;
-  engine?: string;
 }
 
 export interface RegisterFaceResponse {
@@ -94,4 +63,3 @@ export interface RegisterFaceResponse {
   message?: string;
   error?: string;
 }
-

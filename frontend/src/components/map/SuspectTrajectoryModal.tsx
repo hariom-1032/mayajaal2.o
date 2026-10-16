@@ -131,7 +131,7 @@ export function SuspectTrajectoryModal({
 
         {/* Telemetry Stats Strip */}
         {trajectory && trajectory.found && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200 text-xs">
+          <div className="grid grid-cols-3 gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200 text-xs">
             <div>
               <span className="text-slate-500 font-mono text-[10px] uppercase block font-semibold">
                 Sightings Count
@@ -154,14 +154,6 @@ export function SuspectTrajectoryModal({
               </span>
               <span className="font-bold text-rose-700 text-sm truncate block">
                 {trajectory.last_location}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-500 font-mono text-[10px] uppercase block font-semibold">
-                Biometric Tracking Mode
-              </span>
-              <span className={`font-bold text-xs truncate block ${trajectory.has_face_fused ? "text-purple-700 font-mono" : "text-slate-700 font-mono"}`}>
-                {trajectory.has_face_fused ? "🧬 Cross-Modal Fused" : "🏃 Whole-Body Re-ID"}
               </span>
             </div>
           </div>
@@ -243,18 +235,9 @@ export function SuspectTrajectoryModal({
                             <span className="text-emerald-800 font-bold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
                               Conf: {formatConfidence(wp.confidence)}
                             </span>
-                            {wp.fusion_mode === "CROSS_MODAL_FUSED" ? (
-                              <span className="text-purple-800 font-bold bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
-                                🧬 Fused: {Math.round((wp.reid_score ?? 1) * 100)}%
-                              </span>
-                            ) : wp.reid_score !== undefined && wp.reid_score < 1.0 ? (
+                            {wp.reid_score !== undefined && wp.reid_score < 1.0 && (
                               <span className="text-cyan-800 font-bold bg-cyan-50 px-1.5 py-0.2 rounded border border-cyan-200">
-                                Body Re-ID: {Math.round(wp.reid_score * 100)}%
-                              </span>
-                            ) : null}
-                            {wp.has_face && (
-                              <span className="text-indigo-800 font-semibold bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
-                                👤 Face Verified
+                                Re-ID: {Math.round(wp.reid_score * 100)}%
                               </span>
                             )}
                           </p>

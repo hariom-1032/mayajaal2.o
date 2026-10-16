@@ -14,7 +14,6 @@ from app.api.cameras import _load_cameras
 from app.api.stream import open_video_source
 from app.pipeline.alert_service import alert_service, SNAPSHOTS_DIR
 from app.pipeline.face_service import face_service
-from app.pipeline.uniface_service import uniface_service
 
 logger = logging.getLogger("SIH26187.FeedScanner")
 
@@ -175,25 +174,14 @@ class ContinuousFaceScanner:
                 else:
                     small_frame = frame
 
-                # Run Biometric Detection (UniFace ArcFace if ready, with YuNet fallback)
-                use_uniface = uniface_service.is_ready()
-                if use_uniface:
-                    faces = uniface_service.analyze_frame(
-                        small_frame,
-                        min_match_score=0.40,
-                        min_face_size=24,
-                        verify_liveness=True,
-                    )
-                    active_draw_faces = uniface_service.draw_faces
-                else:
-                    faces = face_service.detect_and_recognize(
-                        small_frame,
-                        min_match_score=0.34,
-                        min_face_size=24,
-                        det_score_thresh=0.45,
-                        use_temporal_smoothing=False,
-                    )
-                    active_draw_faces = face_service.draw_faces
+                # Run YuNet + SFace recognition with surveillance-calibrated parameters
+                faces = face_service.detect_and_recognize(
+                    small_frame,
+                    min_match_score=0.34,
+                    min_face_size=24,
+                    det_score_thresh=0.45,
+                    use_temporal_smoothing=False,
+                )
 
                 # Inspect detected faces for suspects
                 for face in faces:
@@ -222,14 +210,8 @@ class ContinuousFaceScanner:
                                 calibrated_conf,
                             )
 
-                            # Ignore spoofed presentation attacks (e.g. photos/screens held to CCTV)
-                            liveness_data = face.get("liveness", {})
-                            if not liveness_data.get("is_real", True):
-                                logger.info("Ignored suspect match on %s due to spoof detection.", cam_id)
-                                continue
-
                             # Annotate frame with high-visibility red box & details
-                            annotated_snapshot = active_draw_faces(small_frame, [face])
+                            annotated_snapshot = face_service.draw_faces(small_frame, [face])
 
                             # Save alert snapshot JPEG
                             ts_str = int(now_sec * 1000)

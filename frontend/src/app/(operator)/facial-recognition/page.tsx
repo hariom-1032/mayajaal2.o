@@ -219,9 +219,6 @@ export default function FacialRecognitionPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [minMatchThreshold, setMinMatchThreshold] = useState<number>(0.40);
-  const [selectedEngine, setSelectedEngine] = useState<"auto" | "uniface" | "yunet">("auto");
-  const [verifyLiveness, setVerifyLiveness] = useState<boolean>(true);
-  const [anonymizeBystanders, setAnonymizeBystanders] = useState<boolean>(false);
 
   // Initial Data Fetch
   useEffect(() => {
@@ -468,14 +465,7 @@ export default function FacialRecognitionPage() {
     setScanResult(null);
 
     try {
-      const res = await api.scanFaceImage(
-        file,
-        minMatchThreshold,
-        40,
-        selectedEngine,
-        verifyLiveness,
-        anonymizeBystanders
-      );
+      const res = await api.scanFaceImage(file, minMatchThreshold, 40);
       setScanResult(res);
       await fetchEvents();
     } catch (err: unknown) {
@@ -536,15 +526,9 @@ export default function FacialRecognitionPage() {
                 <span className="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-semibold">
                   YuNet + SFace
                 </span>
-                {engineStatus?.uniface_ready && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-mono font-bold">
-                    <Sparkles className="w-3 h-3 text-indigo-500" />
-                    UniFace ArcFace 512-D + FairFace + Liveness
-                  </span>
-                )}
               </div>
               <p className="text-xs md:text-sm font-medium text-slate-500 mt-0.5">
-                Surveillance-grade biometrics with SCRFD face detection, ArcFace 512-D matching, demographics, and anti-spoofing
+                YuNet High-Res Face Detector & SFace 128-D Cosine Matching with Temporal Smoothing
               </p>
             </div>
           </div>
@@ -1231,53 +1215,6 @@ export default function FacialRecognitionPage() {
               <p className="text-[10px] text-slate-400 mt-0.5">Supports JPG, PNG, WEBP</p>
             </label>
 
-            {/* Engine & Advanced Biometric Controls */}
-            <div className="flex flex-col gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                  <Cpu className="w-3.5 h-3.5 text-indigo-600" />
-                  Inference Engine:
-                </span>
-                <select
-                  value={selectedEngine}
-                  onChange={(e) => setSelectedEngine(e.target.value as "auto" | "uniface" | "yunet")}
-                  className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 bg-white font-medium text-slate-800 shadow-2xs focus:border-indigo-500 focus:outline-hidden"
-                >
-                  <option value="auto">Auto (UniFace Priority)</option>
-                  <option value="uniface">UniFace (ArcFace 512-D + AI)</option>
-                  <option value="yunet">OpenCV YuNet + SFace (128-D)</option>
-                </select>
-              </div>
-
-              {/* Liveness Check Toggle */}
-              <label className="flex items-center justify-between text-xs cursor-pointer select-none">
-                <span className="text-slate-600 flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  Anti-Spoof Liveness (MiniFASNet):
-                </span>
-                <input
-                  type="checkbox"
-                  checked={verifyLiveness}
-                  onChange={(e) => setVerifyLiveness(e.target.checked)}
-                  className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
-                />
-              </label>
-
-              {/* Bystander Anonymization Toggle */}
-              <label className="flex items-center justify-between text-xs cursor-pointer select-none">
-                <span className="text-slate-600 flex items-center gap-1.5">
-                  <Eye className="w-3.5 h-3.5 text-slate-500" />
-                  Privacy Anonymize Bystanders:
-                </span>
-                <input
-                  type="checkbox"
-                  checked={anonymizeBystanders}
-                  onChange={(e) => setAnonymizeBystanders(e.target.checked)}
-                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
-                />
-              </label>
-            </div>
-
             {/* Threshold Slider */}
             <div className="flex flex-col gap-2">
               <div className="flex justify-between text-xs">
@@ -1296,7 +1233,7 @@ export default function FacialRecognitionPage() {
                 className="w-full accent-emerald-700 cursor-pointer"
               />
               <span className="text-[10px] text-slate-400">
-                Calibrated decision threshold for surveillance biometric matching.
+                Default 0.40 recommended for calibrated SFace cosine similarity.
               </span>
             </div>
 
@@ -1312,7 +1249,7 @@ export default function FacialRecognitionPage() {
             {isScanning ? (
               <div className="p-16 flex flex-col items-center justify-center gap-3 text-slate-500">
                 <RefreshCw className="w-8 h-8 animate-spin text-emerald-700" />
-                <p className="text-xs font-medium">Running UniFace multi-attribute biometric inference...</p>
+                <p className="text-xs font-medium">Extracting YuNet face anchors and computing SFace embeddings...</p>
               </div>
             ) : scanResult ? (
               <div className="flex flex-col gap-5">
@@ -1333,7 +1270,7 @@ export default function FacialRecognitionPage() {
                   ) : null}
 
                   <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-[11px] font-mono text-emerald-400">
-                    FACES: {scanResult.face_count} • LATENCY: {scanResult.latency_ms}ms • ENGINE: {scanResult.engine?.toUpperCase() || "UNIFACE"}
+                    FACES DETECTED: {scanResult.face_count} • LATENCY: {scanResult.latency_ms}ms
                   </div>
                 </div>
 
@@ -1342,89 +1279,42 @@ export default function FacialRecognitionPage() {
                   {scanResult.faces.map((f, idx) => (
                     <div
                       key={idx}
-                      className={`p-3.5 rounded-xl border flex flex-col gap-2.5 ${
-                        f.is_threat
-                          ? "bg-rose-50/70 border-rose-200 text-slate-900"
-                          : f.is_known
+                      className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                        f.is_known
                           ? "bg-emerald-50/60 border-emerald-200 text-slate-900"
                           : "bg-amber-50/60 border-amber-200 text-slate-900"
                       }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className={`p-2 rounded-xl ${
-                              f.is_threat
-                                ? "bg-rose-100 text-rose-800"
-                                : f.is_known
-                                ? "bg-emerald-100 text-emerald-800"
-                                : "bg-amber-100 text-amber-800"
-                            }`}
-                          >
-                            {f.is_threat ? (
-                              <ShieldAlert className="w-4 h-4 text-rose-700" />
-                            ) : f.is_known ? (
-                              <UserCheck className="w-4 h-4" />
-                            ) : (
-                              <UserX className="w-4 h-4" />
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-bold text-xs text-slate-900">{f.name}</p>
-                            <p className="text-[11px] font-mono text-slate-500">
-                              Confidence: {f.calibrated_conf}%
-                            </p>
-                          </div>
-                        </div>
-
-                        <span
-                          className={`px-2.5 py-1 text-[11px] font-bold rounded-lg ${
-                            f.is_threat
-                              ? "bg-rose-100 text-rose-800 border border-rose-300"
-                              : f.is_known
-                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
-                              : "bg-amber-100 text-amber-800 border border-amber-300"
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`p-2 rounded-xl ${
+                            f.is_known
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-amber-100 text-amber-800"
                           }`}
                         >
-                          {f.is_threat ? "SUSPECT MATCH" : f.is_known ? "VERIFIED" : "UNKNOWN"}
-                        </span>
+                          {f.is_known ? <UserCheck className="w-4 h-4" /> : <UserX className="w-4 h-4" />}
+                        </div>
+                        <div>
+                          <p className="font-bold text-xs text-slate-900">{f.name}</p>
+                          <p className="text-[11px] font-mono text-slate-500">
+                            Confidence: {f.calibrated_conf}%
+                          </p>
+                          <p className="text-[10px] font-mono text-slate-400">
+                            Cosine: {f.match_score} | L2: {f.l2_distance ?? "N/A"}
+                          </p>
+                        </div>
                       </div>
 
-                      {/* Biometric Attribute Chips */}
-                      <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-200/60">
-                        {/* Demographics Chip */}
-                        {f.demographics && (f.demographics.gender || f.demographics.age_group) && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[10px] font-medium text-slate-700 shadow-2xs">
-                            👤 {f.demographics.gender || "Unknown"}, {f.demographics.age_group || "N/A"}
-                          </span>
-                        )}
-
-                        {/* Liveness Chip */}
-                        {f.liveness && (
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border shadow-2xs ${
-                              f.liveness.is_real
-                                ? "bg-emerald-100/80 text-emerald-800 border-emerald-300"
-                                : "bg-rose-100/90 text-rose-800 border-rose-300 animate-pulse"
-                            }`}
-                          >
-                            {f.liveness.is_real
-                              ? `🛡️ Live (${(f.liveness.confidence * 100).toFixed(0)}%)`
-                              : "⚠️ Fake / Spoof"}
-                          </span>
-                        )}
-
-                        {/* Disguise / Mask Chip */}
-                        {f.attributes?.has_disguise && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
-                            😷 {f.attributes.disguise_labels?.join(", ")}
-                          </span>
-                        )}
-
-                        <span className="text-[10px] font-mono text-slate-400 ml-auto">
-                          Score: {f.match_score}
-                        </span>
-                      </div>
+                      <span
+                        className={`px-2.5 py-1 text-[11px] font-bold rounded-lg ${
+                          f.is_known
+                            ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                            : "bg-amber-100 text-amber-800 border border-amber-300"
+                        }`}
+                      >
+                        {f.is_known ? "VERIFIED" : "UNKNOWN"}
+                      </span>
                     </div>
                   ))}
                 </div>

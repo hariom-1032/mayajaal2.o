@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.pipeline.face_service import face_service
-from app.pipeline.uniface_service import uniface_service
 
 logger = logging.getLogger("SIH26187.FaceAPI")
 
@@ -62,35 +61,14 @@ def list_enrolled_faces() -> dict:
 
 @router.get("/status")
 def get_face_engine_status() -> dict:
-    """Get operational status of OpenCV YuNet/SFace and UniFace models."""
-    yunet_ready = face_service.detector is not None and face_service.recognizer is not None
-    uniface_ready = uniface_service.is_ready()
-    faiss_indexed = uniface_service.faiss_store.size if uniface_service.faiss_store is not None else 0
+    """Get operational status of YuNet and SFace models and enrolled personnel count."""
     return {
-        "status": "ready" if (yunet_ready or uniface_ready) else "degraded",
-        "detector_loaded": yunet_ready,
-        "recognizer_loaded": yunet_ready,
-        "uniface_ready": uniface_ready,
-        "active_engine": "uniface" if uniface_ready else "yunet",
-        "enrolled_count": max(len(face_service.known_persons), len(uniface_service.known_persons)),
+        "status": "ready" if (face_service.detector and face_service.recognizer) else "degraded",
+        "detector_loaded": face_service.detector is not None,
+        "recognizer_loaded": face_service.recognizer is not None,
+        "enrolled_count": len(face_service.known_persons),
         "yunet_model": str(face_service.yunet_path.name),
         "sface_model": str(face_service.sface_path.name),
-        "vector_store": {
-            "engine": "FAISS (IndexFlatIP)",
-            "vectors_indexed": faiss_indexed,
-            "dimension": 512,
-            "metric": "Inner Product (Cosine Similarity)",
-            "status": "ready" if uniface_service.faiss_store is not None else "unavailable",
-        },
-        "uniface_models": {
-            "detector": "SCRFD_500M",
-            "recognizer": "ArcFace_MNet (512-D)",
-            "demographics": "FairFace",
-            "attributes": "FaceAttribNet (Mask, Sunglasses)",
-            "spoofing": "MiniFASNet_V2",
-            "privacy": "BlurFace",
-            "vector_store": "FAISS_IndexFlatIP",
-        },
     }
 
 
@@ -151,20 +129,6 @@ async def register_face(
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to register face"))
 
-    # Also synchronize enrollment into UniFace FAISS vector store
-    if uniface_service.is_ready():
-        try:
-            uniface_service.register_face(
-                image_bgr,
-                name.strip(),
-                is_suspect=is_suspect,
-                threat_level=threat_level,
-                category=category,
-                notes=notes or "",
-            )
-        except Exception as u_err:
-            logger.warning("UniFace registration synchronization error: %s", u_err)
-
     return result
 
 
@@ -208,22 +172,6 @@ async def add_face_sample(
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to add sample"))
 
-    # Also synchronize sample with UniFace
-    if uniface_service.is_ready():
-        try:
-            p = next((x for x in face_service.known_persons if x["id"] == person_id), None)
-            if p:
-                uniface_service.register_face(
-                    image_bgr,
-                    p["name"],
-                    is_suspect=p.get("is_suspect", False),
-                    threat_level=p.get("threat_level", "HIGH"),
-                    category=p.get("category", "Wanted / BOLO"),
-                    notes=p.get("notes", ""),
-                )
-        except Exception as u_err:
-            logger.warning("UniFace add-sample synchronization error: %s", u_err)
-
     return result
 
 
@@ -233,8 +181,6 @@ def delete_person(person_id: str) -> dict:
     res = face_service.delete_person(person_id)
     if not res.get("success"):
         raise HTTPException(status_code=404, detail="Person ID not found")
-    # Also delete in UniFace FAISS store
-    uniface_service.delete_person(person_id)
     return res
 
 
@@ -244,14 +190,10 @@ async def scan_image(
     image_base64: Optional[str] = Form(None),
     min_match_score: float = Form(0.40),
     min_face_size: int = Form(40),
-    engine: str = Form("auto"),
-    verify_liveness: bool = Form(True),
-    anonymize_bystanders: bool = Form(False),
 ) -> dict:
     """
     Perform face detection and identity recognition on a static image.
-    Supports dual engines: 'auto' / 'uniface' (SCRFD + ArcFace + FairFace + Liveness) or 'yunet' (YuNet + SFace).
-    Returns detected face boxes, identity names, match scores, demographics, disguise flags, liveness, and visualization.
+    Returns detected face boxes, identity names, match scores, and annotated visualization.
     """
     t0 = time.perf_counter()
     image_bgr: Optional[np.ndarray] = None
@@ -265,28 +207,14 @@ async def scan_image(
     if image_bgr is None:
         raise HTTPException(status_code=400, detail="Valid image is required.")
 
-    use_uniface = (engine == "uniface") or (engine == "auto" and uniface_service.is_ready())
+    faces = face_service.detect_and_recognize(
+        image_bgr,
+        min_match_score=min_match_score,
+        min_face_size=min_face_size,
+        use_temporal_smoothing=False,
+    )
 
-    if use_uniface:
-        faces = uniface_service.analyze_frame(
-            image_bgr,
-            min_match_score=min_match_score,
-            min_face_size=min_face_size,
-            verify_liveness=verify_liveness,
-            anonymize_bystanders=anonymize_bystanders,
-        )
-        annotated = uniface_service.draw_faces(image_bgr, faces)
-        active_engine = "uniface"
-    else:
-        faces = face_service.detect_and_recognize(
-            image_bgr,
-            min_match_score=min_match_score,
-            min_face_size=min_face_size,
-            use_temporal_smoothing=False,
-        )
-        annotated = face_service.draw_faces(image_bgr, faces)
-        active_engine = "yunet"
-
+    annotated = face_service.draw_faces(image_bgr, faces)
     ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     annotated_b64 = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("utf-8") if ret else None
 
@@ -294,62 +222,10 @@ async def scan_image(
 
     return {
         "success": True,
-        "engine": active_engine,
         "face_count": len(faces),
         "faces": faces,
         "latency_ms": latency_ms,
         "annotated_image": annotated_b64,
-    }
-
-
-@router.post("/uniface/analyze")
-async def analyze_with_uniface(
-    file: Optional[UploadFile] = File(None),
-    image_base64: Optional[str] = Form(None),
-    min_match_score: float = Form(0.42),
-    verify_liveness: bool = Form(True),
-    anonymize_bystanders: bool = Form(False),
-) -> dict:
-    """Dedicated UniFace deep biometric analysis endpoint."""
-    t0 = time.perf_counter()
-    image_bgr: Optional[np.ndarray] = None
-
-    if file:
-        content = await file.read()
-        image_bgr = decode_image_input(file_bytes=content)
-    elif image_base64:
-        image_bgr = decode_image_input(base64_str=image_base64)
-
-    if image_bgr is None:
-        raise HTTPException(status_code=400, detail="Valid image is required.")
-
-    faces = uniface_service.analyze_frame(
-        image_bgr,
-        min_match_score=min_match_score,
-        verify_liveness=verify_liveness,
-        anonymize_bystanders=anonymize_bystanders,
-    )
-    annotated = uniface_service.draw_faces(image_bgr, faces)
-    ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-    annotated_b64 = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("utf-8") if ret else None
-
-    return {
-        "success": True,
-        "engine": "uniface",
-        "face_count": len(faces),
-        "faces": faces,
-        "latency_ms": round((time.perf_counter() - t0) * 1000.0, 1),
-        "annotated_image": annotated_b64,
-    }
-
-
-@router.get("/uniface/events")
-def get_uniface_events(limit: int = Query(30, ge=1, le=100)) -> dict:
-    """Retrieve telemetry events with demographics and liveness from UniFace."""
-    return {
-        "success": True,
-        "count": len(uniface_service.recent_events[:limit]),
-        "events": uniface_service.recent_events[:limit],
     }
 
 

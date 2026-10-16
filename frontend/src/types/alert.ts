@@ -64,10 +64,6 @@ export interface SuspectWaypoint {
   elapsed_minutes?: number;
   elapsed_time_minutes?: number;
   reid_score?: number;
-  body_score?: number;
-  face_score?: number;
-  fusion_mode?: string;
-  has_face?: boolean;
 }
 
 export interface SuspectTrajectory {
@@ -84,23 +80,6 @@ export interface SuspectTrajectory {
   last_seen_time?: string;
   waypoints: SuspectWaypoint[];
   is_cross_camera?: boolean;
-  has_face_fused?: boolean;
-  fusion_mode?: string;
-  demographics?: {
-    gender?: string;
-    age_group?: string;
-    race?: string;
-  };
-  attributes?: {
-    has_disguise?: boolean;
-    disguise_labels?: string[];
-    mask_prob?: number;
-    sunglasses_prob?: number;
-  };
-  liveness?: {
-    is_real?: boolean;
-    confidence?: number;
-  };
 }
 
 export interface GlobalTraceItem {
@@ -118,24 +97,6 @@ export interface GlobalTraceItem {
   threat_level?: string | null;
   category?: string | null;
   waypoints_count: number;
-  has_face_fused?: boolean;
-  fusion_mode?: string;
-  last_body_score?: number;
-  last_face_score?: number;
-  last_fused_score?: number;
-  demographics?: {
-    gender?: string;
-    age_group?: string;
-    race?: string;
-  };
-  attributes?: {
-    has_disguise?: boolean;
-    disguise_labels?: string[];
-  };
-  liveness?: {
-    is_real?: boolean;
-    confidence?: number;
-  };
 }
 
 

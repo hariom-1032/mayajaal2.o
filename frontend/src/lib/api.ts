@@ -516,17 +516,11 @@ export const api = {
   async scanFaceImage(
     fileOrBase64: File | Blob | string,
     minMatchScore: number = 0.40,
-    minFaceSize: number = 40,
-    engine: "auto" | "uniface" | "yunet" = "auto",
-    verifyLiveness: boolean = true,
-    anonymizeBystanders: boolean = false
+    minFaceSize: number = 40
   ): Promise<FaceScanResponse> {
     const formData = new FormData();
     formData.append("min_match_score", minMatchScore.toString());
     formData.append("min_face_size", minFaceSize.toString());
-    formData.append("engine", engine);
-    formData.append("verify_liveness", verifyLiveness.toString());
-    formData.append("anonymize_bystanders", anonymizeBystanders.toString());
     if (typeof fileOrBase64 === "string") {
       formData.append("image_base64", fileOrBase64);
     } else {
