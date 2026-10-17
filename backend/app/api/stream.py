@@ -26,13 +26,15 @@ router = APIRouter(
     tags=["Stream"],
 )
 
-# ── Session-based stream stop registry ────────────────────────────────────────
+# ── Session-based stream stop & real-time telemetry registries ─────────────────
 # Maps session_id → threading.Event.  Each live stream connection registers
 # here.  When the frontend navigates away it calls
 # DELETE /api/stream/live/stop?session_id=X, which sets the event and causes
 # the generator to exit its while-True loop within one frame interval (~40 ms),
 # freeing all GPU/CPU inference resources immediately.
 _live_stop_events: dict[str, threading.Event] = {}
+# Maps session_id → latest structured detection telemetry (targets, faces, vehicles, fps, latency)
+_live_session_detections: dict[str, dict] = {}
 
 # Colors for bounding box classes (BGR)
 CLASS_COLORS = {
@@ -109,9 +111,34 @@ def create_standby_frame(
 import socket
 from urllib.parse import urlparse
 
+
+def is_webcam_source(raw_url: str) -> bool:
+    """Check if stream URL points to a local hardware webcam device index or alias."""
+    clean = (raw_url or "").strip().lower()
+    if clean.isdigit():
+        return True
+    if clean in ("webcam", "camera", "default", "usb", "cam", "device0", "device 0"):
+        return True
+    if clean.startswith("webcam:") or clean.startswith("camera:"):
+        return True
+    return False
+
+
+def get_webcam_index(raw_url: str) -> int:
+    """Extract integer camera device index from webcam string (e.g. '0', 'webcam:1' -> 1)."""
+    clean = (raw_url or "").strip().lower()
+    if clean.isdigit():
+        return int(clean)
+    if ":" in clean:
+        parts = clean.split(":")
+        if len(parts) > 1 and parts[1].strip().isdigit():
+            return int(parts[1].strip())
+    return 0
+
+
 def normalize_stream_url(raw_url: str) -> tuple[str, list[str], str]:
     """
-    Normalizes any video source input (RTSP, HTTP IP Webcam, bare host:port, or sample).
+    Normalizes any video source input (Webcam, RTSP, HTTP IP Webcam, bare host:port, or sample).
     Returns:
         canonical_url: Primary sanitized URL
         candidates: List of fallback candidate URLs to test (crucial for IP Webcam Pro / DroidCam)
@@ -120,6 +147,10 @@ def normalize_stream_url(raw_url: str) -> tuple[str, list[str], str]:
     clean = (raw_url or "").strip()
     if not clean or clean.lower() in ("sample", "demo", "test"):
         return "sample", ["sample"], "Sample Video Simulation"
+
+    if is_webcam_source(clean):
+        idx = get_webcam_index(clean)
+        return str(idx), [str(idx)], f"Local Webcam (Device {idx})"
 
     if Path(clean).is_file():
         return clean, [clean], "Local Video Source"
@@ -164,8 +195,12 @@ def normalize_stream_url(raw_url: str) -> tuple[str, list[str], str]:
 
 
 def is_host_reachable(url: str, timeout_seconds: float = 1.5) -> tuple[bool, str, str, int]:
-    """Fast TCP probe to verify host and port reachability with clear diagnostics."""
+    """Fast probe to verify host reachability or local camera device accessibility."""
     clean = url.strip()
+    if is_webcam_source(clean):
+        idx = get_webcam_index(clean)
+        return True, f"Local Webcam Device {idx} ready", "localhost", idx
+
     if "://" not in clean:
         clean = f"http://{clean}"
     parsed = urlparse(clean)
@@ -198,7 +233,7 @@ def is_rtsp_host_reachable(rtsp_url: str, timeout_seconds: float = 1.0) -> tuple
 
 def open_video_source(source_url: str) -> tuple[cv2.VideoCapture | None, str, str, str]:
     """
-    Open any supported video source: RTSP, HTTP IP Webcam Pro, local file, or sample demo.
+    Open any supported video source: Local Webcam (0/1), RTSP, HTTP IP Webcam Pro, local file, or sample demo.
     Returns:
         (cap, diag_message, resolved_url, protocol_name)
     """
@@ -212,6 +247,18 @@ def open_video_source(source_url: str) -> tuple[cv2.VideoCapture | None, str, st
             if cap.isOpened():
                 return cap, "Sample Surveillance Feed Active", str(SAMPLE_VIDEO_PATH), protocol
         return None, "Sample video file not found on server", "sample", protocol
+
+    # --- Local Webcam Device ---
+    if is_webcam_source(canonical_url):
+        idx = get_webcam_index(canonical_url)
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(idx)
+        if cap.isOpened():
+            success, frame = cap.read()
+            if success and frame is not None and frame.size > 0:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                return cap, f"Webcam Device {idx} Connected", str(idx), f"Local Webcam (Device {idx})"
+            cap.release()
+        return None, f"Could not access Webcam Device {idx}", str(idx), f"Local Webcam (Device {idx})"
 
     # --- Local file ---
     if Path(canonical_url).is_file():
@@ -287,7 +334,11 @@ def draw_tactical_hud(
     cv2.circle(frame, (25, 26), 5, dot_color, -1)
 
     # Dynamic status text based on protocol
-    short_proto = "IP-WEBCAM" if "IP Webcam" in protocol else ("RTSP" if "RTSP" in protocol else "FEED")
+    short_proto = (
+        "WEBCAM"
+        if "Webcam" in protocol and "IP Webcam" not in protocol
+        else ("IP-WEBCAM" if "IP Webcam" in protocol else ("RTSP" if "RTSP" in protocol else "FEED"))
+    )
     status_text = f"{short_proto} LIVE" if is_live else "FEED SYNCING"
     cv2.putText(frame, status_text, (38, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     cv2.putText(frame, f"{fps:.1f} FPS", (195, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 200, 220), 1)
@@ -407,7 +458,7 @@ def draw_bounding_boxes(
 
 def stream_generator(
     rtsp_url: str,
-    draw_detections: bool = False,
+    draw_detections: bool = True,
     conf_threshold: float = 0.30,
     model_name: str = "best",
     fps_limit: int = 24,
@@ -417,14 +468,16 @@ def stream_generator(
     camera_id: Optional[str] = None,
     camera_name: Optional[str] = None,
     stop_event: Optional[threading.Event] = None,
+    session_id: Optional[str] = None,
 ) -> Generator[bytes, None, None]:
     """
-    Generator yielding multipart JPEG frames from RTSP or IP Webcam Pro stream.
+    Generator yielding multipart JPEG frames from Local Webcam, RTSP, or IP Webcam Pro stream.
     Gracefully falls back to tactical standby or demo stream when link is offline.
 
     Args:
         stop_event: Optional threading.Event. When set (via DELETE /api/stream/live/stop),
                     the generator exits within one frame interval, stopping all inference.
+        session_id: Client session ID used to publish real-time structured detection telemetry.
     """
     frame_interval = 1.0 / max(1, min(fps_limit, 30))
     cap, conn_diag, resolved_url, protocol = open_video_source(rtsp_url)
@@ -438,9 +491,9 @@ def stream_generator(
     effective_cam_id = camera_id or resolved_url or rtsp_url
     effective_cam_name = camera_name or protocol or "Live Stream"
 
-    # Initialize AI preprocessor if detections requested
+    # Initialize AI preprocessor whenever detection model is loaded
     preprocessor = None
-    if draw_detections and model_manager.is_loaded(model_name):
+    if model_manager.is_loaded(model_name):
         try:
             preprocessor = Preprocessor(
                 PreprocessingConfig(
@@ -458,12 +511,11 @@ def stream_generator(
 
     # Initialize ByteTracker for in-stream multi-object tracking
     tracker = None
-    if draw_detections:
-        try:
-            from app.tracking.tracker import ByteTrackerWrapper
-            tracker = ByteTrackerWrapper()
-        except Exception as exc:
-            logger.warning("Could not initialize ByteTracker for stream: %s", exc)
+    try:
+        from app.tracking.tracker import ByteTrackerWrapper
+        tracker = ByteTrackerWrapper()
+    except Exception as exc:
+        logger.warning("Could not initialize ByteTracker for stream: %s", exc)
 
     cached_detections: list[dict] = []
     cached_faces: list[dict] = []
@@ -558,7 +610,7 @@ def stream_generator(
             # This guarantees every individual frame executes in <40ms, achieving 20+ FPS!
 
             # Stage 1: Threat Detection (YOLO + ByteTrack)
-            if draw_detections and preprocessor and model_manager.is_loaded(model_name):
+            if preprocessor and model_manager.is_loaded(model_name):
                 if frame_count % 4 == 0:
                     try:
                         tensor = preprocessor.process(frame)
@@ -668,7 +720,7 @@ def stream_generator(
                     except Exception as exc:
                         logger.debug("Live stream vehicle detection exception: %s", exc)
 
-            # Draw AI Threat Boxes (from cached detections)
+            # Draw AI Threat Boxes (from cached detections) only if requested
             if draw_detections and cached_detections:
                 draw_bounding_boxes(frame, cached_detections)
 
@@ -695,6 +747,86 @@ def stream_generator(
                 breach_label=active_breach_name if (time.time() - active_breach_time < 4.0) else None,
             )
 
+            # Update real-time detections registry for active session
+            if session_id:
+                formatted_dets: list[dict] = []
+                suspects_in_stream: list[dict] = []
+
+                for d in cached_detections:
+                    bx = d.get("box", [])
+                    if len(bx) >= 4:
+                        c_name = str(d.get("class_name", "object")).lower()
+                        c_conf = float(d.get("confidence", 0.0))
+                        t_id = d.get("track_id")
+                        is_br = bool(d.get("is_breach", False))
+                        b_lbl = d.get("breach_label")
+                        gtid = d.get("global_trace_id")
+                        is_th = c_name in ("firearm", "explosive", "melee_weapon", "blunt_weapon") or is_br
+                        t_lvl = "CRITICAL" if is_br else ("HIGH" if is_th else None)
+                        formatted_dets.append({
+                            "box": [int(v) for v in bx],
+                            "class_id": d.get("class_id", 0),
+                            "class_name": c_name,
+                            "confidence": round(c_conf, 3),
+                            "track_id": t_id,
+                            "is_threat": is_th,
+                            "threat_level": t_lvl,
+                            "is_breach": is_br,
+                            "breach_label": b_lbl,
+                            "global_trace_id": gtid,
+                        })
+
+                if enable_face_recognition and cached_faces:
+                    for fc in cached_faces:
+                        fc_box = fc.get("bbox") or fc.get("box")
+                        if fc_box and len(fc_box) >= 4:
+                            f_name = fc.get("name", "Unknown")
+                            is_th = bool(fc.get("is_threat", False))
+                            f_conf = float(fc.get("calibrated_conf") or fc.get("match_score") or fc.get("confidence") or 0.85)
+                            t_lvl = fc.get("threat_level", "HIGH" if is_th else None)
+                            cat = fc.get("category", "Suspect Target" if is_th else "Personnel")
+                            formatted_dets.append({
+                                "box": [int(v) for v in fc_box],
+                                "class_id": 999,
+                                "class_name": f"suspect_{f_name.lower()}" if is_th else f"face_{f_name.lower()}",
+                                "confidence": round(f_conf, 3),
+                                "is_threat": is_th,
+                                "threat_level": t_lvl,
+                                "suspect_name": f_name,
+                                "category": cat,
+                            })
+                            if is_th:
+                                suspects_in_stream.append({
+                                    "name": f_name,
+                                    "threat_level": t_lvl or "HIGH",
+                                    "confidence": round(f_conf, 3),
+                                    "category": cat,
+                                })
+
+                if enable_vehicle_detection and cached_vehicles:
+                    for v in cached_vehicles:
+                        v_box = v.get("box", [])
+                        if len(v_box) >= 4:
+                            formatted_dets.append({
+                                "box": [int(v_val) for v_val in v_box],
+                                "class_id": v.get("class_id", 888),
+                                "class_name": v.get("class_name", "vehicle"),
+                                "confidence": round(float(v.get("confidence", 0.0)), 3),
+                                "track_id": v.get("track_id"),
+                                "is_threat": False,
+                                "category": "Transport / Vehicle",
+                            })
+
+                _live_session_detections[session_id] = {
+                    "session_id": session_id,
+                    "timestamp": time.time(),
+                    "fps": round(measured_fps, 1),
+                    "latency_ms": round((time.perf_counter() - t_start) * 1000, 1),
+                    "detections": formatted_dets,
+                    "suspects": suspects_in_stream,
+                    "count": len(formatted_dets),
+                }
+
             # Encode frame to JPEG
             ret, jpeg = cv2.imencode(
                 ".jpg",
@@ -720,13 +852,15 @@ def stream_generator(
     finally:
         if cap is not None:
             cap.release()
+        if session_id:
+            _live_session_detections.pop(session_id, None)
 
 
 @router.get("/validate")
 def validate_stream(
     stream_url: str = Query(
         ...,
-        description="Stream URL (RTSP, HTTP IP Webcam, or 'sample')",
+        description="Stream URL (RTSP, HTTP IP Webcam, local webcam '0', or 'sample')",
     ),
 ) -> dict:
     """
@@ -757,12 +891,47 @@ def validate_stream(
         "resolved_url": candidates[0] if candidates else canonical_url,
         "host": host,
         "port": port,
-        "latency_ms": 25 if reachable else 0,
+        "latency_ms": 1 if ("Webcam" in protocol and reachable) else (25 if reachable else 0),
         "message": diag,
         "is_ip_webcam": is_ip_webcam,
         "candidates": candidates,
     }
 
+
+@router.get("/live/detections")
+def get_live_detections(
+    session_id: str = Query(..., description="Active stream session ID"),
+) -> dict:
+    """Get the latest real-time AI detections for an active live stream session."""
+    data = _live_session_detections.get(session_id)
+    if data:
+        # Check staleness: if no update in 4 seconds, mark stale and clear targets
+        if time.time() - data.get("timestamp", 0) > 4.0:
+            return {
+                "session_id": session_id,
+                "status": "stale",
+                "timestamp": data.get("timestamp", 0),
+                "fps": 0,
+                "latency_ms": 0,
+                "detections": [],
+                "suspects": [],
+                "count": 0,
+            }
+        return {
+            "session_id": session_id,
+            "status": "active",
+            **data,
+        }
+    return {
+        "session_id": session_id,
+        "status": "idle",
+        "timestamp": time.time(),
+        "fps": 0,
+        "latency_ms": 0,
+        "detections": [],
+        "suspects": [],
+        "count": 0,
+    }
 
 
 @router.delete("/live/stop")
@@ -775,6 +944,7 @@ def stop_live_stream(
     The generator exits its while-True loop within one frame interval, stopping
     all YOLO / face-recognition inference and releasing GPU resources.
     """
+    _live_session_detections.pop(session_id, None)
     event = _live_stop_events.pop(session_id, None)
     if event is not None:
         event.set()
@@ -854,9 +1024,11 @@ def get_live_stream(
                 camera_id=camera_id,
                 camera_name=camera_name,
                 stop_event=stop_event,
+                session_id=sid,
             )
         finally:
             _live_stop_events.pop(sid, None)
+            _live_session_detections.pop(sid, None)
 
     return StreamingResponse(
         _gen_with_cleanup(),

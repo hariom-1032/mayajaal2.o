@@ -102,6 +102,20 @@ class RTSPStream:
 
         self.release()
 
+        # Check for local webcam device index or alias
+        clean = (self.rtsp_url or "").strip().lower()
+        if clean.isdigit() or clean in ("webcam", "camera", "default", "usb"):
+            cam_idx = int(clean) if clean.isdigit() else 0
+            capture = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(cam_idx)
+            if capture.isOpened():
+                capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                success, frame = capture.read()
+                if success and frame is not None and frame.size > 0:
+                    self.capture = capture
+                    logger.info("Local webcam device %s connected successfully", cam_idx)
+                    return
+                capture.release()
+
         # Generate candidates for IP Webcam if applicable
         candidates = [self.rtsp_url]
         lower_url = self.rtsp_url.lower()

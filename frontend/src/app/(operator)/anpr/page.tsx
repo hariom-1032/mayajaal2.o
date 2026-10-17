@@ -72,6 +72,7 @@ export default function AnprPage() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [showRtspHelp, setShowRtspHelp] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isImageFullscreen, setIsImageFullscreen] = useState<boolean>(false);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState<boolean>(false);
   const [interceptionSearch, setInterceptionSearch] = useState<string>("");
 
@@ -94,6 +95,18 @@ export default function AnprPage() {
     document.addEventListener("fullscreenchange", handleFsChange);
     return () => document.removeEventListener("fullscreenchange", handleFsChange);
   }, []);
+
+  // Escape key listener for Single Image Scanner fullscreen modal
+  useEffect(() => {
+    if (!isImageFullscreen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsImageFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isImageFullscreen]);
 
   // ── Reliable Stream Teardown on Unmount ─────────────────────────────────────
   // When the user navigates away we:
@@ -1083,17 +1096,35 @@ export default function AnprPage() {
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
                     Annotated Detection Output ({imageResult.processingTimeMs} ms)
                   </h4>
-                  <span className="text-xs font-mono font-bold text-emerald-700">
-                    {imageResult.platesDetected} Plate(s) Detected
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-emerald-700">
+                      {imageResult.platesDetected} Plate(s) Detected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsImageFullscreen(true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                      title="View annotated scan in full screen"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5 text-slate-600" />
+                      <span>Fullscreen</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="rounded-xl overflow-hidden border border-slate-200 bg-black">
+                <div
+                  onDoubleClick={() => setIsImageFullscreen(true)}
+                  className="rounded-xl overflow-hidden border border-slate-200 bg-black relative group cursor-zoom-in"
+                >
                   <img
                     src={imageResult.annotatedImageUrl}
                     alt="ANPR Scan Result"
                     className="w-full object-contain max-h-[500px]"
                   />
+                  <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/75 text-white text-[11px] font-mono px-2 py-1 rounded backdrop-blur-xs flex items-center gap-1.5 pointer-events-none">
+                    <Maximize2 className="w-3 h-3 text-emerald-400" />
+                    <span>Click button or double-click for Fullscreen</span>
+                  </div>
                 </div>
               </div>
 
@@ -1151,6 +1182,48 @@ export default function AnprPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Fullscreen Overlay for ANPR Vehicle Photo Inspection */}
+          {isImageFullscreen && imageResult && (
+            <div
+              className="fixed inset-0 z-[9999] bg-slate-950/95 flex flex-col p-4 backdrop-blur-md animate-in fade-in"
+              onClick={() => setIsImageFullscreen(false)}
+            >
+              <div
+                className="flex items-center justify-between text-white p-2 pb-3 border-b border-slate-800"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-mono text-sm font-bold tracking-wider">
+                    ANPR FORENSIC INSPECTION • FULLSCREEN
+                  </span>
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/30">
+                    {imageResult.platesDetected} Plate(s) Detected
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsImageFullscreen(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-600 text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>Exit Fullscreen</span>
+                  <span className="text-[10px] bg-black/40 px-1 rounded border border-white/20">ESC</span>
+                </button>
+              </div>
+              <div
+                className="flex-1 flex items-center justify-center min-h-0 p-4"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <img
+                  src={imageResult.annotatedImageUrl}
+                  alt="ANPR Scan Result Fullscreen"
+                  className="w-full h-full object-contain max-h-full"
+                />
               </div>
             </div>
           )}

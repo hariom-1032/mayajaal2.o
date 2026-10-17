@@ -23,6 +23,7 @@ import {
   Sparkles,
   Zap,
   Maximize2,
+  Minimize2,
   X,
   UserPlus,
   Eye,
@@ -62,15 +63,24 @@ export default function FacialRecognitionPage() {
   // Client-Side Browser Webcam WebSocket Streaming State
   const clientVideoRef = useRef<HTMLVideoElement | null>(null);
   const clientCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const clientDisplayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientWsRef = useRef<WebSocket | null>(null);
-  const clientIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [clientAnnotatedUrl, setClientAnnotatedUrl] = useState<string | null>(null);
+  const clientWatchdogRef = useRef<NodeJS.Timeout | null>(null);
+  const clientSendTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isProcessingRef = useRef<boolean>(false);
+  const lastSentTimeRef = useRef<number>(0);
+  const hasReceivedFirstFrameRef = useRef<boolean>(false);
+  const [hasClientFeed, setHasClientFeed] = useState<boolean>(false);
   const [isClientStreaming, setIsClientStreaming] = useState<boolean>(false);
 
   const stopClientStreaming = () => {
-    if (clientIntervalRef.current) {
-      clearInterval(clientIntervalRef.current);
-      clientIntervalRef.current = null;
+    if (clientWatchdogRef.current) {
+      clearInterval(clientWatchdogRef.current);
+      clientWatchdogRef.current = null;
+    }
+    if (clientSendTimerRef.current) {
+      clearTimeout(clientSendTimerRef.current);
+      clientSendTimerRef.current = null;
     }
     if (clientWsRef.current) {
       try {
@@ -85,7 +95,17 @@ export default function FacialRecognitionPage() {
       } catch {}
       clientVideoRef.current.srcObject = null;
     }
+    isProcessingRef.current = false;
+    hasReceivedFirstFrameRef.current = false;
+    setHasClientFeed(false);
     setIsClientStreaming(false);
+
+    if (clientDisplayCanvasRef.current) {
+      const ctx = clientDisplayCanvasRef.current.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, clientDisplayCanvasRef.current.width, clientDisplayCanvasRef.current.height);
+      }
+    }
   };
 
   const startClientStreaming = async () => {
@@ -111,44 +131,125 @@ export default function FacialRecognitionPage() {
       ws.binaryType = "blob";
       clientWsRef.current = ws;
 
+      const captureAndSend = () => {
+        if (!clientWsRef.current || clientWsRef.current.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        // Backpressure flow control: Skip if backend is still processing previous frame
+        if (isProcessingRef.current) {
+          if (performance.now() - lastSentTimeRef.current > 350) {
+            // Watchdog unlock if a frame or network reply was dropped
+            isProcessingRef.current = false;
+          } else {
+            return;
+          }
+        }
+
+        // Skip if browser WebSocket buffer is congested
+        if (clientWsRef.current.bufferedAmount > 0) {
+          return;
+        }
+
+        const video = clientVideoRef.current;
+        const canvas = clientCanvasRef.current;
+        if (!video || !canvas || !video.videoWidth || !video.videoHeight) {
+          return;
+        }
+
+        // Downsample to max width 640 maintaining aspect ratio for ultra-fast encoding & inference
+        const maxW = 640;
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        let targetW = vw;
+        let targetH = vh;
+        if (vw > maxW) {
+          targetW = maxW;
+          targetH = Math.round((vh * maxW) / vw);
+        }
+
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+          canvas.width = targetW;
+          canvas.height = targetH;
+        }
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        ctx.drawImage(video, 0, 0, targetW, targetH);
+        isProcessingRef.current = true;
+        lastSentTimeRef.current = performance.now();
+
+        canvas.toBlob(
+          (blob) => {
+            if (blob && clientWsRef.current && clientWsRef.current.readyState === WebSocket.OPEN) {
+              clientWsRef.current.send(blob);
+            } else {
+              isProcessingRef.current = false;
+            }
+          },
+          "image/jpeg",
+          0.65
+        );
+      };
+
+      const scheduleNextFrame = () => {
+        if (clientSendTimerRef.current) return;
+        const now = performance.now();
+        const elapsed = now - lastSentTimeRef.current;
+        // Paced interval: aim for smooth 20-22 FPS (~45ms) without queue buildup
+        const wait = Math.max(0, 45 - elapsed);
+        clientSendTimerRef.current = setTimeout(() => {
+          clientSendTimerRef.current = null;
+          captureAndSend();
+        }, wait);
+      };
+
       ws.onopen = () => {
         setIsClientStreaming(true);
         setStreamError(false);
+        isProcessingRef.current = false;
+        hasReceivedFirstFrameRef.current = false;
+        captureAndSend();
 
-        clientIntervalRef.current = setInterval(() => {
-          if (!clientVideoRef.current || !clientCanvasRef.current || ws.readyState !== WebSocket.OPEN) {
-            return;
+        // Safety ticker to recover if a frame drop occurs
+        clientWatchdogRef.current = setInterval(() => {
+          if (!isProcessingRef.current) {
+            scheduleNextFrame();
+          } else if (performance.now() - lastSentTimeRef.current > 350) {
+            isProcessingRef.current = false;
+            scheduleNextFrame();
           }
-          const video = clientVideoRef.current;
-          const canvas = clientCanvasRef.current;
-          if (!video.videoWidth || !video.videoHeight) return;
-
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob(
-              (blob) => {
-                if (blob && ws.readyState === WebSocket.OPEN) {
-                  ws.send(blob);
-                }
-              },
-              "image/jpeg",
-              0.72
-            );
-          }
-        }, 66);
+        }, 100);
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
+        isProcessingRef.current = false;
         if (event.data instanceof Blob) {
-          const url = URL.createObjectURL(event.data);
-          setClientAnnotatedUrl((prev) => {
-            if (prev) URL.revokeObjectURL(prev);
-            return url;
-          });
+          try {
+            const bmp = await createImageBitmap(event.data);
+            const displayCanvas = clientDisplayCanvasRef.current;
+            if (displayCanvas) {
+              if (displayCanvas.width !== bmp.width || displayCanvas.height !== bmp.height) {
+                displayCanvas.width = bmp.width;
+                displayCanvas.height = bmp.height;
+              }
+              const ctx = displayCanvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(bmp, 0, 0);
+              }
+            }
+            bmp.close();
+            if (!hasReceivedFirstFrameRef.current) {
+              hasReceivedFirstFrameRef.current = true;
+              setHasClientFeed(true);
+            }
+          } catch {
+            // Bitmap decode fallback
+          }
         }
+        // Immediately trigger next frame capture (Zero-lag request-response loop!)
+        scheduleNextFrame();
       };
 
       ws.onerror = () => {
@@ -219,6 +320,46 @@ export default function FacialRecognitionPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [minMatchThreshold, setMinMatchThreshold] = useState<number>(0.40);
+
+  // Fullscreen states & refs
+  const streamContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isStreamFullscreen, setIsStreamFullscreen] = useState(false);
+  const [isFaceScanFullscreen, setIsFaceScanFullscreen] = useState(false);
+
+  const toggleStreamFullscreen = () => {
+    if (!streamContainerRef.current) return;
+    if (!document.fullscreenElement && !isStreamFullscreen) {
+      streamContainerRef.current.requestFullscreen().catch(() => {});
+      setIsStreamFullscreen(true);
+    } else {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setIsStreamFullscreen(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsStreamFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFsChange);
+    return () => document.removeEventListener("fullscreenchange", handleFsChange);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (isFaceScanFullscreen) setIsFaceScanFullscreen(false);
+        if (isStreamFullscreen) {
+          if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+          setIsStreamFullscreen(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isStreamFullscreen, isFaceScanFullscreen]);
 
   // Initial Data Fetch
   useEffect(() => {
@@ -698,14 +839,26 @@ export default function FacialRecognitionPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Main Video Screen Container (2 cols) */}
           <div className="lg:col-span-2 space-y-4">
-            <div className="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-lg relative">
+            <div
+              ref={streamContainerRef}
+              className={`bg-slate-900 overflow-hidden relative transition-all duration-200 ${
+                isStreamFullscreen
+                  ? "fixed inset-0 z-[9999] w-screen h-screen flex flex-col rounded-none border-none shadow-2xl"
+                  : "rounded-2xl border border-slate-800 shadow-lg"
+              }`}
+            >
               {/* Top Stream Control Bar */}
-              <div className="bg-slate-950/80 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              <div className="bg-slate-950/80 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
                   <span className="text-xs font-bold font-mono text-emerald-400">BIOMETRIC STREAM</span>
                   <span className="text-xs text-slate-500">|</span>
                   <span className="text-xs text-slate-300 font-mono">{streamSource.toUpperCase()}</span>
+                  {isStreamFullscreen && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-500/40">
+                      FULLSCREEN FOCUS
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -766,30 +919,58 @@ export default function FacialRecognitionPage() {
                   >
                     {isStreamPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                   </button>
+
+                  {/* Fullscreen Toggle Button */}
+                  <button
+                    type="button"
+                    onClick={toggleStreamFullscreen}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                      isStreamFullscreen
+                        ? "bg-rose-600 hover:bg-rose-500 text-white"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white"
+                    }`}
+                    title={isStreamFullscreen ? "Exit Fullscreen (Esc)" : "View in Fullscreen"}
+                  >
+                    {isStreamFullscreen ? (
+                      <>
+                        <Minimize2 className="w-3.5 h-3.5" />
+                        <span>Exit Fullscreen</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Fullscreen</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
 
               {/* Stream Feed Viewport */}
-              <div className="relative aspect-video w-full bg-black flex items-center justify-center overflow-hidden">
+              <div
+                onDoubleClick={toggleStreamFullscreen}
+                className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${
+                  isStreamFullscreen ? "flex-1 min-h-0 h-full" : "aspect-video"
+                }`}
+              >
                 {isStreamPlaying ? (
                   <>
                     {streamSource === "browser" ? (
-                      clientAnnotatedUrl ? (
-                        /* eslint-disable-next-line @next/next/no-img-element */
-                        <img
-                          src={clientAnnotatedUrl}
-                          alt="Live Client Biometric Stream"
-                          className="w-full h-full object-contain"
+                      <div className="relative w-full h-full flex items-center justify-center">
+                        <canvas
+                          ref={clientDisplayCanvasRef}
+                          className={`w-full h-full object-contain ${hasClientFeed ? "block" : "hidden"}`}
                         />
-                      ) : (
-                        <div className="flex flex-col items-center gap-3 text-slate-400 p-6 text-center">
-                          <Camera className="w-10 h-10 text-emerald-400 animate-pulse" />
-                          <p className="text-sm font-medium text-slate-200">Connecting Local Webcam to AI Engine...</p>
-                          <p className="text-xs text-slate-400 max-w-sm">
-                            Streaming browser webcam frames to {BACKEND_BASE_URL} for real-time YuNet & SFace biometric identification.
-                          </p>
-                        </div>
-                      )
+                        {!hasClientFeed && (
+                          <div className="flex flex-col items-center gap-3 text-slate-400 p-6 text-center">
+                            <Camera className="w-10 h-10 text-emerald-400 animate-pulse" />
+                            <p className="text-sm font-medium text-slate-200">Connecting Local Webcam to AI Engine...</p>
+                            <p className="text-xs text-slate-400 max-w-sm">
+                              Streaming browser webcam frames to {BACKEND_BASE_URL} for real-time YuNet & SFace biometric identification.
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
@@ -1254,7 +1435,10 @@ export default function FacialRecognitionPage() {
             ) : scanResult ? (
               <div className="flex flex-col gap-5">
                 {/* Annotated Output Preview */}
-                <div className="relative rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shadow-md">
+                <div
+                  onDoubleClick={() => setIsFaceScanFullscreen(true)}
+                  className="relative rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shadow-md group cursor-zoom-in"
+                >
                   {scanResult.annotated_image ? (
                     <img
                       src={scanResult.annotated_image}
@@ -1271,6 +1455,18 @@ export default function FacialRecognitionPage() {
 
                   <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-700 text-[11px] font-mono text-emerald-400">
                     FACES DETECTED: {scanResult.face_count} • LATENCY: {scanResult.latency_ms}ms
+                  </div>
+
+                  <div className="absolute top-3 right-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsFaceScanFullscreen(true)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 hover:text-white flex items-center gap-1.5 backdrop-blur-xs cursor-pointer shadow-md"
+                      title="View forensic scan in full screen"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Fullscreen</span>
+                    </button>
                   </div>
                 </div>
 
@@ -1325,6 +1521,48 @@ export default function FacialRecognitionPage() {
               </div>
             )}
           </div>
+
+          {/* Fullscreen Modal for Face Scan Inspection */}
+          {isFaceScanFullscreen && scanResult && (
+            <div
+              className="fixed inset-0 z-[9999] bg-slate-950/95 flex flex-col p-4 backdrop-blur-md animate-in fade-in"
+              onClick={() => setIsFaceScanFullscreen(false)}
+            >
+              <div
+                className="flex items-center justify-between text-white p-2 pb-3 border-b border-slate-800"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-mono text-sm font-bold tracking-wider">
+                    BIOMETRIC FORENSIC SCAN • FULLSCREEN
+                  </span>
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/30">
+                    {scanResult.face_count} Face(s) Detected • {scanResult.latency_ms}ms
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsFaceScanFullscreen(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-600 text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>Exit Fullscreen</span>
+                  <span className="text-[10px] bg-black/40 px-1 rounded border border-white/20">ESC</span>
+                </button>
+              </div>
+              <div
+                className="flex-1 flex items-center justify-center min-h-0 p-4"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <img
+                  src={scanResult.annotated_image || scanPreview || ""}
+                  alt="Biometric Scan Fullscreen"
+                  className="w-full h-full object-contain max-h-full"
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 

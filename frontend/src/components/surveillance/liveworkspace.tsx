@@ -29,6 +29,7 @@ import {
   Link2,
   Link2Off,
   Maximize2,
+  Minimize2,
   AlertTriangle,
   X,
   Globe,
@@ -44,7 +45,7 @@ import {
 /** Build the backend MJPEG stream URL (proxied Next.js → FastAPI). */
 function buildStreamUrl(
   rtspUrl: string,
-  drawDetections = false,
+  drawDetections = true,
   enableFaceBiometrics = true,
   enableVehicleDetector = false,
   sessionId?: string
@@ -90,7 +91,7 @@ export function LiveWorkspace() {
   const [streamDiagnostics, setStreamDiagnostics] = useState<string | null>(null);
   const [streamProtocol, setStreamProtocol] = useState<string>("Live Stream");
   const [detectedResolvedUrl, setDetectedResolvedUrl] = useState<string | null>(null);
-  const [drawDetectionsOnStream, setDrawDetectionsOnStream] = useState<boolean>(false);
+  const [drawDetectionsOnStream, setDrawDetectionsOnStream] = useState<boolean>(true);
   const [enableFaceBiometrics, setEnableFaceBiometrics] = useState<boolean>(true);
   const [enableVehicleDetector, setEnableVehicleDetector] = useState<boolean>(false);
   const [selectedCamera, setSelectedCamera] = useState<CameraType | null>(null);
@@ -144,6 +145,66 @@ export function LiveWorkspace() {
       ? crypto.randomUUID()
       : Math.random().toString(36).slice(2)
   );
+
+  // Fullscreen viewport container ref & state
+  const viewportContainerRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [showFullscreenInspector, setShowFullscreenInspector] = useState<boolean>(false);
+
+  // Fullscreen toggle handler (uses native Fullscreen API with state fallback)
+  const toggleFullscreen = useCallback(async () => {
+    if (!viewportContainerRef.current) return;
+
+    if (!document.fullscreenElement && !isFullscreen) {
+      try {
+        if (viewportContainerRef.current.requestFullscreen) {
+          await viewportContainerRef.current.requestFullscreen();
+        }
+      } catch (err) {
+        console.warn("Native fullscreen request failed, falling back to CSS fullscreen:", err);
+      }
+      setIsFullscreen(true);
+    } else {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen().catch(() => {});
+      }
+      setIsFullscreen(false);
+    }
+  }, [isFullscreen]);
+
+  // Sync fullscreen state with browser events
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFsChange);
+    document.addEventListener("webkitfullscreenchange", handleFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFsChange);
+      document.removeEventListener("webkitfullscreenchange", handleFsChange);
+    };
+  }, []);
+
+  // Keyboard shortcut listeners (ESC to exit, F to toggle)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) {
+        return;
+      }
+      if (e.key === "Escape" && isFullscreen) {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+        setIsFullscreen(false);
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        toggleFullscreen();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isFullscreen, toggleFullscreen]);
 
   // Set default model when models list updates (prioritize 'best')
   useEffect(() => {
@@ -199,6 +260,40 @@ export function LiveWorkspace() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawDetectionsOnStream, enableFaceBiometrics, enableVehicleDetector]);
+
+  // ── Real-Time Target Inspector Sync for Live Stream ──────────────────────────
+  useEffect(() => {
+    if (sourceMode !== "rtsp" || !isStreamActive || streamError) {
+      return;
+    }
+
+    let isMounted = true;
+    const sid = sessionIdRef.current;
+
+    const pollLiveDetections = async () => {
+      try {
+        const res = await api.getLiveStreamDetections(sid);
+        if (!isMounted) return;
+        if (res && res.status === "active" && Array.isArray(res.detections)) {
+          setDetections(res.detections);
+          if (res.latency_ms) setLatencyMs(Math.round(res.latency_ms));
+          if (res.suspects && res.suspects.length > 0) {
+            setDetectedSuspectsInMedia(res.suspects);
+          }
+        }
+      } catch (err) {
+        console.debug("Live stream detection sync poll:", err);
+      }
+    };
+
+    const interval = setInterval(pollLiveDetections, 350);
+    pollLiveDetections();
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [sourceMode, isStreamActive, streamError]);
 
   // Camera grid click → populate RTSP URL + auto-connect
   const handleCameraSelect = useCallback(
@@ -307,7 +402,13 @@ export function LiveWorkspace() {
     setActiveMjpegSrc(null);
     setStreamError(false);
     setStreamDiagnostics(null);
+    setDetections([]);
+    setDetectedSuspectsInMedia([]);
     setStatusMessage("Stream disconnected.");
+    const sid = sessionIdRef.current;
+    fetch(`/api/backend/stream/live/stop?session_id=${encodeURIComponent(sid)}`, {
+      method: "DELETE",
+    }).catch(() => {});
   }, []);
 
   // Load default model helper if no models loaded
@@ -860,7 +961,7 @@ export function LiveWorkspace() {
             }`}
           >
             <Radio className="w-3.5 h-3.5" />
-            Live Surveillance (RTSP / IP Webcam)
+            Live Surveillance (Webcam / RTSP / IP Feed)
           </button>
         </div>
 
@@ -1059,7 +1160,7 @@ export function LiveWorkspace() {
                       handleConnectStream();
                     }
                   }}
-                  placeholder="e.g. http://12.10.5.194:8080, rtsp://10.20.72.101:554/live, or 'sample'"
+                  placeholder="e.g. 0 (Local Webcam), http://192.168.1.5:8080 (IP Webcam), rtsp://..., or 'sample'"
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 pr-8 text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 shadow-2xs"
                 />
                 {rtspInputValue && (
@@ -1157,10 +1258,21 @@ export function LiveWorkspace() {
               <button
                 type="button"
                 onClick={() => {
+                  setRtspInputValue("0");
+                  handleConnectStream("0");
+                }}
+                className="px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 transition-colors font-mono font-bold cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                <Camera className="w-3.5 h-3.5 text-emerald-700" />
+                Local Webcam (Device 0)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   setRtspInputValue("sample");
                   handleConnectStream("sample");
                 }}
-                className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-emerald-800 border border-slate-200 transition-colors font-mono font-medium cursor-pointer"
+                className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 transition-colors font-mono font-medium cursor-pointer"
               >
                 Sample Simulation Feed
               </button>
@@ -1294,10 +1406,17 @@ export function LiveWorkspace() {
       {/* 2. Primary Feed with Tactical Overlay Canvas & Inspector */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Main Viewport (Col 8) */}
-        <div className="lg:col-span-8 bg-[#0d1215] rounded-xl border border-slate-800 shadow-lg overflow-hidden flex flex-col relative select-none">
+        <div
+          ref={viewportContainerRef}
+          className={`bg-[#0d1215] flex flex-col relative select-none transition-all duration-200 ${
+            isFullscreen
+              ? "fixed inset-0 z-[9999] w-screen h-screen rounded-none border-none shadow-2xl overflow-hidden"
+              : "lg:col-span-8 rounded-xl border border-slate-800 shadow-lg overflow-hidden"
+          }`}
+        >
           {/* Tactical Header Overlay */}
-          <div className="p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-xs text-white z-30 pointer-events-none">
-            <div className="flex items-center gap-2">
+          <div className="p-3 bg-gradient-to-b from-black/90 via-black/60 to-transparent flex items-center justify-between text-xs text-white z-30 pointer-events-none">
+            <div className="flex items-center gap-2 pointer-events-auto">
               <span className="flex h-2 w-2 relative">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -1313,16 +1432,77 @@ export function LiveWorkspace() {
                   ? "IMAGE SCAN • SAMPLE FRAME"
                   : "IMAGE SCAN • DIRECT UPLOAD"}
               </span>
+              {isFullscreen && (
+                <span className="ml-2 px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase tracking-wider bg-emerald-950/90 text-emerald-300 border border-emerald-500/50 shadow-xs">
+                  FULLSCREEN FOCUS
+                </span>
+              )}
             </div>
-            <div className="font-mono text-[11px] text-slate-400">
-              RES: {sourceMode === "upload-image" && !imagePreviewUrl ? "Awaiting Input" : `${sourceDims.width}x${sourceDims.height}`}
-              {videoMetadata?.fps ? ` • ${Math.round(videoMetadata.fps)} FPS` : ""}
-              {latencyMs !== null && ` • LATENCY: ${latencyMs}ms`}
+            <div className="flex items-center gap-2 sm:gap-3 pointer-events-auto">
+              <div className="font-mono text-[11px] text-slate-400 hidden sm:block">
+                RES: {sourceMode === "upload-image" && !imagePreviewUrl ? "Awaiting Input" : `${sourceDims.width}x${sourceDims.height}`}
+                {videoMetadata?.fps ? ` • ${Math.round(videoMetadata.fps)} FPS` : ""}
+                {latencyMs !== null && ` • LATENCY: ${latencyMs}ms`}
+              </div>
+
+              {/* Detections quick drawer toggle in fullscreen */}
+              {isFullscreen && detections.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowFullscreenInspector((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    showFullscreenInspector
+                      ? "bg-emerald-600 text-white ring-1 ring-emerald-400 shadow-xs"
+                      : "bg-slate-800/90 text-emerald-300 hover:bg-slate-700 border border-emerald-500/40"
+                  }`}
+                  title="Toggle Tactical Target Inspector in fullscreen"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{detections.length} Targets</span>
+                </button>
+              )}
+
+              {/* Primary Fullscreen Toggle Button */}
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer shadow-md ${
+                  isFullscreen
+                    ? "bg-rose-600/90 hover:bg-rose-600 text-white border border-rose-500/80 ring-2 ring-rose-500/30"
+                    : "bg-emerald-900/60 hover:bg-emerald-800/90 text-emerald-200 border border-emerald-500/40 hover:border-emerald-400 hover:text-white"
+                }`}
+                title={isFullscreen ? "Exit Fullscreen (Esc or F)" : "View in Fullscreen (F)"}
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5 text-white" />
+                    <span>Exit Fullscreen</span>
+                    <span className="hidden md:inline-block text-[10px] bg-black/40 px-1.5 py-0.2 rounded border border-white/20">
+                      ESC
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>Fullscreen</span>
+                    <span className="hidden md:inline-block text-[10px] bg-black/40 px-1.5 py-0.2 rounded border border-emerald-500/30 text-emerald-300">
+                      F
+                    </span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
           {/* Media Viewport + Overlay Canvas */}
-          <div className="relative w-full aspect-video min-h-[360px] max-h-[560px] flex items-center justify-center bg-black overflow-hidden">
+          <div
+            onDoubleClick={toggleFullscreen}
+            className={`relative w-full flex items-center justify-center bg-black overflow-hidden transition-all ${
+              isFullscreen
+                ? "flex-1 min-h-0 h-full max-h-none"
+                : "aspect-video min-h-[360px] max-h-[560px]"
+            }`}
+          >
             {/* Corner Reticles */}
             <div className="absolute top-3 left-3 w-5 h-5 border-t-2 border-l-2 border-emerald-500/80 z-30 pointer-events-none" />
             <div className="absolute top-3 right-3 w-5 h-5 border-t-2 border-r-2 border-emerald-500/80 z-30 pointer-events-none" />
@@ -1392,20 +1572,41 @@ export function LiveWorkspace() {
                   <div className="text-center">
                     <p className="text-slate-300 text-sm font-semibold font-mono">NO STREAM ACTIVE</p>
                     <p className="text-slate-500 text-xs mt-1">
-                      Enter an RTSP or IP Webcam URL above and click{" "}
-                      <span className="text-emerald-400 font-semibold">Connect Feed</span>,
-                      or choose a preset or camera from the grid below.
+                      Choose your local webcam, an IP Webcam / RTSP stream, or simulation demo.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleConnectStream()}
-                    disabled={!rtspInputValue.trim()}
-                    className="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-emerald-700 hover:bg-emerald-600 text-white transition-colors disabled:opacity-40"
-                  >
-                    <Link2 className="w-4 h-4" />
-                    Connect to Stream
-                  </button>
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRtspInputValue("0");
+                        handleConnectStream("0");
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold bg-[#1e4b38] hover:bg-[#163a2b] text-white transition-colors cursor-pointer shadow-xs"
+                    >
+                      <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                      Start Local Webcam
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleConnectStream()}
+                      disabled={!rtspInputValue.trim()}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white transition-colors disabled:opacity-40"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      Connect Feed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRtspInputValue("sample");
+                        handleConnectStream("sample");
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer"
+                    >
+                      Sample Feed
+                    </button>
+                  </div>
                 </div>
               )
             ) : sourceMode === "upload-video" ? (
@@ -1523,6 +1724,14 @@ export function LiveWorkspace() {
                 <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={toggleFullscreen}
+                    className="p-1.5 rounded-lg text-xs font-semibold bg-slate-900/85 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700 shadow-md transition-all cursor-pointer backdrop-blur-xs"
+                    title={isFullscreen ? "Exit Fullscreen (Esc)" : "Expand to Fullscreen (F)"}
+                  >
+                    {isFullscreen ? <Minimize2 className="w-3.5 h-3.5 text-white" /> : <Maximize2 className="w-3.5 h-3.5 text-emerald-400" />}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => imageFileInputRef.current?.click()}
                     className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/85 hover:bg-slate-800 text-white border border-slate-700 shadow-md flex items-center gap-1.5 transition-all cursor-pointer backdrop-blur-xs"
                     title="Upload different image"
@@ -1562,6 +1771,75 @@ export function LiveWorkspace() {
                 sourceWidth={sourceDims.width}
                 sourceHeight={sourceDims.height}
               />
+            )}
+
+            {/* Floating Target Inspector Drawer (Active in Fullscreen mode when targets exist) */}
+            {isFullscreen && showFullscreenInspector && detections.length > 0 && (
+              <div className="absolute top-16 right-4 z-40 w-84 max-h-[calc(100vh-140px)] bg-slate-950/90 border border-slate-800 backdrop-blur-md rounded-2xl p-4 shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-2">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    Target Inspector ({detections.length})
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setShowFullscreenInspector(false)}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-2 overflow-y-auto max-h-[calc(100vh-220px)] pr-1">
+                  {detections.map((det, idx) => {
+                    const isSuspect = Boolean(
+                      det.is_threat ||
+                      det.class_name.toLowerCase().startsWith("suspect") ||
+                      det.threat_level
+                    );
+                    const suspectName = det.suspect_name || det.class_name.replace(/^suspect_/i, "");
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`p-2.5 rounded-xl border text-xs ${
+                          isSuspect
+                            ? "bg-rose-950/40 border-rose-800/60 text-rose-200"
+                            : "bg-slate-900/80 border-slate-800 text-slate-200"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-mono font-bold uppercase truncate flex items-center gap-1.5">
+                            {isSuspect ? (
+                              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                            ) : null}
+                            <span>{isSuspect ? `SUSPECT: ${suspectName.toUpperCase()}` : `${det.class_name} #${idx + 1}`}</span>
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            isSuspect ? "bg-rose-600 text-white" : "bg-emerald-950 text-emerald-300 border border-emerald-700/50"
+                          }`}>
+                            {formatConfidence(det.confidence)}
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between mt-1">
+                          <span>Box: [{det.box.map((n) => Math.round(n)).join(", ")}]</span>
+                          {isSuspect && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSuspectForTrajectory(suspectName);
+                                toggleFullscreen();
+                              }}
+                              className="text-rose-400 hover:text-rose-300 font-semibold underline flex items-center gap-1 cursor-pointer"
+                            >
+                              <Compass className="w-3 h-3" /> Trajectory
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1618,8 +1896,8 @@ export function LiveWorkspace() {
           )}
 
           {/* Bottom Bar with Status Telemetry */}
-          <div className="px-4 py-2 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
-            <span className="font-mono text-[11px]">
+          <div className="px-4 py-2.5 bg-slate-900/95 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300 z-30 shrink-0">
+            <span className="font-mono text-[11px] truncate mr-2">
               {statusMessage ||
                 (isOnline
                   ? (sourceMode === "upload-image" && !imagePreviewUrl
@@ -1627,19 +1905,30 @@ export function LiveWorkspace() {
                       : "Engine Ready — Trigger detection to scan feed.")
                   : "AI Engine Offline — Start backend on port 8000.")}
             </span>
-            {sourceMode === "rtsp" ? (
-              <span className={`font-semibold text-xs font-mono ${
-                isStreamActive && !streamError ? "text-emerald-400" : "text-slate-500"
-              }`}>
-                {isStreamActive && !streamError ? "● LIVE" : streamError ? "● ERROR" : "○ STANDBY"}
-              </span>
-            ) : (
-              <span className="font-semibold text-emerald-400 text-xs font-mono">
-                {sourceMode === "upload-image" && !imagePreviewUrl
-                  ? "NO IMAGE LOADED"
-                  : `${detections.length} TARGETS ACQUIRED`}
-              </span>
-            )}
+            <div className="flex items-center gap-3 shrink-0">
+              {isFullscreen && (
+                <span className="hidden sm:inline-block font-mono text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+                  Double-click feed or press ESC / F to exit
+                </span>
+              )}
+              {sourceMode === "rtsp" ? (
+                <span className={`font-semibold text-xs font-mono ${
+                  isStreamActive && !streamError ? "text-emerald-400" : "text-slate-500"
+                }`}>
+                  {isStreamActive && !streamError
+                    ? `● LIVE • ${detections.length} TARGETS ACQUIRED`
+                    : streamError
+                    ? "● ERROR"
+                    : "○ STANDBY"}
+                </span>
+              ) : (
+                <span className="font-semibold text-emerald-400 text-xs font-mono">
+                  {sourceMode === "upload-image" && !imagePreviewUrl
+                    ? "NO IMAGE LOADED"
+                    : `${detections.length} TARGETS ACQUIRED`}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAlerts } from "@/lib/alertsStore";
 import { AlertItem, AlertSeverity } from "@/types/alert";
 import { api } from "@/lib/api";
@@ -12,27 +13,21 @@ import {
   Search,
   Check,
   RefreshCw,
-  BellRing,
   Trash2,
-  UserX,
   Eye,
   X,
   Camera,
   Navigation,
   Download,
-  HardDrive,
   RotateCcw,
 } from "lucide-react";
 import { SuspectTrajectoryModal } from "@/components/map/SuspectTrajectoryModal";
 import { formatConfidence } from "@/lib/utils";
 
-export default function AlertsPage() {
+function AlertsContent() {
   const {
     alerts,
     connected,
-    unacknowledgedCount,
-    highSeverityCount,
-    suspectsCount,
     acknowledgeAlert,
     deleteIncident,
     clearAll,
@@ -41,11 +36,24 @@ export default function AlertsPage() {
     exportIncidents,
   } = useAlerts();
 
+  const searchParams = useSearchParams();
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | "All" | "Suspects">("All");
   const [statusFilter, setStatusFilter] = useState<"All" | "Pending" | "Acknowledged">("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSnapshot, setSelectedSnapshot] = useState<{ url: string; title: string; camera: string } | null>(null);
   const [selectedSuspectForTrajectory, setSelectedSuspectForTrajectory] = useState<string | null>(null);
+
+  // Sync filters from URL query parameters (e.g., from Dashboard inspect click)
+  useEffect(() => {
+    const sev = searchParams.get("severity");
+    const stat = searchParams.get("status");
+    if (sev === "High" || sev === "Medium" || sev === "Low" || sev === "Suspects") {
+      setSeverityFilter(sev as AlertSeverity | "All" | "Suspects");
+    }
+    if (stat === "Pending" || stat === "Acknowledged" || stat === "All") {
+      setStatusFilter(stat as "All" | "Pending" | "Acknowledged");
+    }
+  }, [searchParams]);
 
   const filteredAlerts = alerts.filter((alert) => {
     if (severityFilter === "Suspects") {
@@ -99,29 +107,8 @@ export default function AlertsPage() {
           </p>
         </div>
 
-        {/* Quick Stats Banner */}
+        {/* Actions & Export */}
         <div className="flex flex-wrap items-center gap-2.5">
-          <div className="px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200/80 text-xs flex items-center gap-2">
-            <UserX className="w-3.5 h-3.5 text-rose-600" />
-            <span className="font-semibold text-rose-800">
-              {suspectsCount} Suspect Sightings
-            </span>
-          </div>
-          <div className="px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200/80 text-xs flex items-center gap-2">
-            <BellRing className="w-3.5 h-3.5 text-amber-600" />
-            <span className="font-semibold text-amber-800">
-              {unacknowledgedCount} Unacknowledged
-            </span>
-          </div>
-
-          <div
-            className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200/80 text-xs font-semibold text-emerald-800"
-            title="Incident records are stored locally and persistent in your browser"
-          >
-            <HardDrive className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Local Vault ({alerts.length})</span>
-          </div>
-
           {/* Export Incident Log */}
           <div className="flex items-center gap-1">
             <button
@@ -496,6 +483,22 @@ export default function AlertsPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function AlertsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-6 pb-12 animate-pulse">
+          <div className="h-10 w-64 bg-slate-200 rounded-xl" />
+          <div className="h-16 w-full bg-slate-100 rounded-2xl" />
+          <div className="h-96 w-full bg-slate-100 rounded-2xl" />
+        </div>
+      }
+    >
+      <AlertsContent />
+    </Suspense>
   );
 }
 

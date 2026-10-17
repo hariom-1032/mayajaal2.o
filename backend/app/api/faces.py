@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime
 import logging
@@ -396,6 +397,9 @@ def _generate_face_stream(
 
                 consecutive_fails = 0
 
+                if source.isdigit() and cap:
+                    cap.grab()
+
                 # Downsample only if exceptionally high resolution (maintain up to 1280px for distant faces)
                 h, w = frame.shape[:2]
                 if w > 1280:
@@ -410,6 +414,7 @@ def _generate_face_stream(
                         min_face_size=24,
                         det_score_thresh=0.45,
                         use_temporal_smoothing=True,
+                        max_det_width=480,
                     )
                     annotated = face_service.draw_faces(frame, faces)
                 except Exception as model_err:
@@ -441,7 +446,7 @@ def _generate_face_stream(
                     cv2.LINE_AA,
                 )
 
-                ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                 if ret:
                     yield (
                         b"--frame\r\n"
@@ -499,72 +504,113 @@ async def face_websocket_stream(websocket: WebSocket):
     Receives video frame blobs from any remote browser (getUserMedia) across the network,
     runs YuNet face detection & SFace identity recognition on the backend server,
     and returns tactical annotated HUD frames to the client in real time.
+    Uses an internal queue of maxsize=1 to drop any stale queued frames, ensuring strictly zero lag.
     """
     await websocket.accept()
     logger.info("Face recognition WebSocket connected from %s", websocket.client)
-    try:
-        while True:
-            message = await websocket.receive()
-            if "bytes" in message and message["bytes"]:
-                data = message["bytes"]
-                np_arr = np.frombuffer(data, np.uint8)
-                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                if frame is None or frame.size == 0:
-                    continue
 
-                h, w = frame.shape[:2]
-                if w > 854:
-                    scale = 854.0 / w
-                    frame = cv2.resize(frame, (854, int(h * scale)))
+    frame_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=1)
+    is_closed = asyncio.Event()
 
-                # Run Face detection & recognition with temporal smoothing and surveillance thresholds
+    async def receive_worker():
+        try:
+            while not is_closed.is_set():
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                if "bytes" in message and message["bytes"]:
+                    if frame_queue.full():
+                        try:
+                            frame_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                    await frame_queue.put(message["bytes"])
+                elif "text" in message and message["text"]:
+                    if message["text"] == "ping":
+                        await websocket.send_text("pong")
+        except WebSocketDisconnect:
+            pass
+        except Exception as err:
+            logger.debug("Receive worker exit: %s", err)
+        finally:
+            is_closed.set()
+            if frame_queue.full():
                 try:
-                    faces = face_service.detect_and_recognize(
-                        frame,
-                        min_match_score=0.34,
-                        min_face_size=24,
-                        det_score_thresh=0.45,
-                        use_temporal_smoothing=True,
-                    )
-                    annotated = face_service.draw_faces(frame, faces)
-                except Exception as model_err:
-                    logger.warning("WebSocket face frame processing error: %s", model_err)
-                    faces = []
-                    annotated = frame
+                    frame_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            await frame_queue.put(None)
 
-                # Stream HUD overlay
-                now_str = datetime.now().strftime("%H:%M:%S")
-                cv2.putText(
-                    annotated,
-                    f"MAATRIX FACE HUD | {now_str} IST",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 230, 115),
-                    2,
-                    cv2.LINE_AA,
+    rx_task = asyncio.create_task(receive_worker())
+
+    try:
+        while not is_closed.is_set():
+            data = await frame_queue.get()
+            if data is None or is_closed.is_set():
+                break
+
+            np_arr = np.frombuffer(data, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is None or frame.size == 0:
+                continue
+
+            h, w = frame.shape[:2]
+            if w > 640:
+                scale = 640.0 / w
+                frame = cv2.resize(frame, (640, int(h * scale)))
+
+            # Run Face detection & recognition with temporal smoothing and surveillance thresholds
+            try:
+                faces = face_service.detect_and_recognize(
+                    frame,
+                    min_match_score=0.34,
+                    min_face_size=24,
+                    det_score_thresh=0.45,
+                    use_temporal_smoothing=True,
+                    max_det_width=480,
                 )
-                count_label = f"DETECTED FACES: {len(faces)} | CLIENT WEBCAM"
-                cv2.putText(
-                    annotated,
-                    count_label,
-                    (20, 55),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    (200, 220, 240),
-                    1,
-                    cv2.LINE_AA,
-                )
+                annotated = face_service.draw_faces(frame, faces)
+            except Exception as model_err:
+                logger.warning("WebSocket face frame processing error: %s", model_err)
+                faces = []
+                annotated = frame
 
-                ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                if ret:
-                    await websocket.send_bytes(jpeg.tobytes())
+            # Stream HUD overlay
+            now_str = datetime.now().strftime("%H:%M:%S")
+            cv2.putText(
+                annotated,
+                f"MAATRIX FACE HUD | {now_str} IST",
+                (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 230, 115),
+                2,
+                cv2.LINE_AA,
+            )
+            count_label = f"DETECTED FACES: {len(faces)} | CLIENT WEBCAM"
+            cv2.putText(
+                annotated,
+                count_label,
+                (20, 55),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (200, 220, 240),
+                1,
+                cv2.LINE_AA,
+            )
 
-            elif "text" in message and message["text"]:
-                if message["text"] == "ping":
-                    await websocket.send_text("pong")
+            ret, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+            if ret and not is_closed.is_set():
+                await websocket.send_bytes(jpeg.tobytes())
 
     except WebSocketDisconnect:
         logger.info("Face recognition WebSocket disconnected.")
     except Exception as exc:
         logger.warning("Face recognition WebSocket error: %s", exc)
+    finally:
+        is_closed.set()
+        rx_task.cancel()
+        try:
+            await rx_task
+        except (asyncio.CancelledError, Exception):
+            pass

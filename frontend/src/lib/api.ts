@@ -1,4 +1,5 @@
 import {
+  Detection,
   HealthResponse,
   InferenceResponse,
   InferenceStatusResponse,
@@ -314,6 +315,22 @@ export const api = {
       method: "POST",
       body: formData,
     });
+  },
+
+  /**
+   * Get real-time AI detections from an active live stream session (Webcam, RTSP, or IP Camera)
+   */
+  async getLiveStreamDetections(sessionId: string): Promise<{
+    session_id: string;
+    status: string;
+    timestamp: number;
+    fps: number;
+    latency_ms: number;
+    detections: Detection[];
+    suspects: Array<{ name: string; threat_level: string; confidence: number; category?: string }>;
+    count: number;
+  }> {
+    return request(`/api/stream/live/detections?session_id=${encodeURIComponent(sessionId)}`);
   },
 
   /**
