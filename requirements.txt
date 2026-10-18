@@ -1,0 +1,5 @@
+# Face Recognition Pipeline Requirements
+uniface[cpu]>=0.1.0
+opencv-python>=4.8.0
+numpy>=1.22.0
+onnxruntime>=1.15.0

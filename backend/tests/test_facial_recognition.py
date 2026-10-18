@@ -17,9 +17,12 @@ from app.core.config import settings
 
 
 def test_face_service_initialization():
-    """Verify UniFace models are properly initialized and database is loaded."""
-    assert face_service.detector is not None, "Face detector must be initialized"
-    assert face_service.recognizer is not None, "UniFace recognizer must be initialized"
+    assert face_service.is_ready, "Face engine must be initialized and ready"
+    if face_service.use_uniface:
+        assert face_service.analyzer is not None, "UniFace analyzer must be initialized"
+    else:
+        assert face_service.detector is not None, "Face detector must be initialized"
+        assert face_service.recognizer is not None, "Face recognizer must be initialized"
     
     persons = face_service.list_persons()
     assert len(persons) >= 1, "Should have at least 1 enrolled person"

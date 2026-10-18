@@ -30,7 +30,37 @@ except ImportError:
     face_alignment = None  # type: ignore[assignment, misc]
     _UNIFACE_AVAILABLE = False
 
+# EDifFIQA: Neural Face Image Quality Assessment
+try:
+    from uniface import EDifFIQA
+    _EDIFFIQA_AVAILABLE = True
+except ImportError:
+    EDifFIQA = None  # type: ignore[assignment, misc]
+    _EDIFFIQA_AVAILABLE = False
+
 logger = logging.getLogger("SIH26187.FaceService")
+
+
+class QualityPredictorAdapter:
+    """
+    Adapter bridging UniFace EDifFIQA to the FaceAnalyzer predictor interface.
+    FaceAnalyzer calls predictor.predict(image, face), but EDifFIQA expects
+    predict(image, landmarks). This adapter extracts 5-point landmarks, calls
+    EDifFIQA, and attaches the resulting QualityResult to face.quality.
+    """
+    def __init__(self, ediffiqa: Any):
+        self._ediffiqa = ediffiqa
+
+    def predict(self, image: np.ndarray, face: Any) -> Any:
+        try:
+            landmarks = getattr(face, "landmarks", None)
+            if landmarks is not None and isinstance(landmarks, np.ndarray) and landmarks.shape[0] >= 5:
+                res = self._ediffiqa.predict(image, landmarks[:5])
+                face.quality = res
+                return res
+        except Exception as e:
+            logger.debug("QualityPredictorAdapter scoring error: %s", e)
+        return None
 
 
 def compute_iou(boxA: list[float], boxB: list[float]) -> float:
@@ -109,36 +139,36 @@ def compute_cosine_similarity(feat1: np.ndarray, feat2: np.ndarray) -> float:
     return float(np.dot(v1, v2) / norm)
 
 
-def calibrate_arcface_confidence(cosine_score: float, threshold: float = 0.40) -> float:
+def calibrate_arcface_confidence(cosine_score: float, threshold: float = 0.32) -> float:
     """
     Calibrate ArcFace / AdaFace cosine similarity (L2-normalized, range -1 to 1)
     into an intuitive, human-friendly confidence percentage (0% to 100%).
 
     ArcFace/AdaFace calibration breakpoints (512-D embeddings):
-      - c < 0.20: Non-match / noise         ->  0% - 15%
-      - c < threshold (0.40): Below boundary -> 15% - 49%
+      - c < 0.15: Non-match / noise         ->  0% - 12%
+      - c < threshold (0.32): Below boundary -> 12% - 49%
       - c = threshold: Decision boundary     -> 50%
-      - c = 0.55: Solid match               -> 85%
-      - c >= 0.65: Near-certain verified     -> 95% - 99.5%
+      - c = 0.50: Solid match               -> 85%
+      - c >= 0.60: Near-certain verified     -> 95% - 99.5%
     """
     c = float(cosine_score)
     th = float(threshold)
     if c <= 0.0:
         return 0.0
-    elif c <= 0.20:
-        val = (c / 0.20) * 15.0
+    elif c <= 0.15:
+        val = (c / 0.15) * 12.0
     elif c < th:
-        val = 15.0 + ((c - 0.20) / max(0.01, th - 0.20)) * 34.0
-    elif c <= 0.55:
-        val = 50.0 + ((c - th) / max(0.01, 0.55 - th)) * 35.0
-    elif c <= 0.65:
-        val = 85.0 + ((c - 0.55) / 0.10) * 10.0
+        val = 12.0 + ((c - 0.15) / max(0.01, th - 0.15)) * 37.0
+    elif c <= 0.50:
+        val = 50.0 + ((c - th) / max(0.01, 0.50 - th)) * 35.0
+    elif c <= 0.60:
+        val = 85.0 + ((c - 0.50) / 0.10) * 10.0
     else:
-        val = 95.0 + min(1.0, (c - 0.65) / 0.25) * 4.5
+        val = 95.0 + min(1.0, (c - 0.60) / 0.25) * 4.5
     return round(float(np.clip(val, 0.0, 99.9)), 1)
 
 
-def calibrate_match_confidence(cosine_score: float, threshold: float = 0.40) -> float:
+def calibrate_match_confidence(cosine_score: float, threshold: float = 0.32) -> float:
     """Unified confidence percentage mapping using UniFace AdaFace 512-D curve."""
     return calibrate_arcface_confidence(cosine_score, threshold=threshold)
 
@@ -162,9 +192,10 @@ class FaceService:
 
         # --- UniFace engine (Exclusive) ---
         self.analyzer: Optional[Any] = None
+        self.quality_scorer: Optional[Any] = None
         self.use_uniface: bool = True
         self.embedding_dim: int = 512
-        self.match_threshold: float = 0.40
+        self.match_threshold: float = 0.32
 
         self.lock = threading.Lock()
 
@@ -189,19 +220,83 @@ class FaceService:
             return
 
         try:
+            # Initialize EDifFIQA quality scorer if available
+            quality_predictors = []
+            if _EDIFFIQA_AVAILABLE and EDifFIQA is not None:
+                try:
+                    self.quality_scorer = EDifFIQA()
+                    quality_predictors.append(QualityPredictorAdapter(self.quality_scorer))
+                    logger.info("EDifFIQA face quality scorer loaded with FaceAnalyzer adapter.")
+                except Exception as q_err:
+                    logger.warning("EDifFIQA initialization failed (non-critical): %s", q_err)
+
             self.analyzer = FaceAnalyzer(
-                recognizer=AdaFace(model_name=AdaFaceWeights.IR_101)
+                recognizer=AdaFace(model_name=AdaFaceWeights.IR_101),
+                predictors=quality_predictors if quality_predictors else None,
             )
             self.use_uniface = True
             self.embedding_dim = 512
-            self.match_threshold = 0.40
-            logger.info("FaceService initialized exclusively with UniFace (AdaFace IR-101, 512-D embeddings).")
+            self.match_threshold = 0.32
+            logger.info("FaceService initialized with UniFace (AdaFace IR-101, 512-D embeddings%s).",
+                        " + EDifFIQA quality" if self.quality_scorer else "")
         except Exception as exc:
             logger.exception("Failed to initialize UniFace FaceAnalyzer: %s", exc)
+
+    def _score_face_quality(
+        self,
+        face_obj: Any,
+        image_bgr: Optional[np.ndarray] = None,
+        aligned_crop: Optional[np.ndarray] = None,
+    ) -> float:
+        """
+        Extract EDifFIQA quality score from a UniFace Face object or aligned face crop.
+        Returns a score in [0.0, 1.0] where higher = better quality.
+        Falls back to 0.5 (neutral) if quality scoring is unavailable.
+        """
+        if face_obj is not None:
+            quality = getattr(face_obj, "quality", None)
+            if quality is not None:
+                if hasattr(quality, "score"):
+                    return float(np.clip(quality.score, 0.0, 1.0))
+                try:
+                    return float(np.clip(float(quality), 0.0, 1.0))
+                except (TypeError, ValueError):
+                    pass
+
+        # Fallback 1: score aligned crop directly if provided
+        if aligned_crop is not None and self.quality_scorer is not None:
+            try:
+                res = self.quality_scorer.score_aligned(aligned_crop)
+                score = res.score if hasattr(res, "score") else float(res)
+                if face_obj is not None:
+                    face_obj.quality = res
+                return float(np.clip(score, 0.0, 1.0))
+            except Exception as e:
+                logger.debug("score_aligned failed: %s", e)
+
+        # Fallback 2: score using image_bgr and face landmarks
+        if (
+            face_obj is not None
+            and image_bgr is not None
+            and self.quality_scorer is not None
+        ):
+            landmarks = getattr(face_obj, "landmarks", None)
+            if landmarks is not None and isinstance(landmarks, np.ndarray) and landmarks.shape[0] >= 5:
+                try:
+                    res = self.quality_scorer.predict(image_bgr, landmarks[:5])
+                    score = res.score if hasattr(res, "score") else float(res)
+                    face_obj.quality = res
+                    return float(np.clip(score, 0.0, 1.0))
+                except Exception as e:
+                    logger.debug("EDifFIQA.predict failed: %s", e)
+
+        return 0.5
 
     @property
     def engine_name(self) -> str:
         """Human-readable active engine identifier for status endpoints."""
+        if self.quality_scorer is not None:
+            return "UniFace (AdaFace IR-101 512-D + EDifFIQA)"
         return "UniFace (AdaFace IR-101 512-D)"
 
     @property
@@ -230,15 +325,32 @@ class FaceService:
         return Path("N/A")
 
     @staticmethod
-    def _compute_centroid(features_np: list[np.ndarray]) -> Optional[np.ndarray]:
-        """Compute the L2-normalized mean embedding (centroid) across all enrolled 512-D samples."""
+    def _compute_centroid(
+        features_np: list[np.ndarray],
+        quality_weights: Optional[list[float]] = None,
+    ) -> Optional[np.ndarray]:
+        """
+        Compute the L2-normalized mean embedding (centroid) across all enrolled 512-D samples.
+        If quality_weights are provided, uses quality-weighted averaging so that clear,
+        high-quality enrollment photos contribute more to the identity anchor than blurry ones.
+        """
         if not features_np:
             return None
         valid_features = [f.reshape(1, -1) for f in features_np if f.flatten().shape[0] == 512]
         if not valid_features:
             return None
         stacked = np.vstack(valid_features).astype(np.float32)
-        mean_vec = np.mean(stacked, axis=0, keepdims=True)
+
+        if quality_weights and len(quality_weights) == len(valid_features):
+            # Quality-weighted centroid: high-quality samples dominate
+            weights = np.array(quality_weights, dtype=np.float32).reshape(-1, 1)
+            # Floor at 0.3 so even low-quality samples contribute slightly
+            weights = np.clip(weights, 0.3, 1.0)
+            weights = weights / weights.sum()
+            mean_vec = (weights * stacked).sum(axis=0, keepdims=True)
+        else:
+            mean_vec = np.mean(stacked, axis=0, keepdims=True)
+
         norm = np.linalg.norm(mean_vec)
         if norm > 1e-8:
             mean_vec = (mean_vec / norm).astype(np.float32)
@@ -266,8 +378,8 @@ class FaceService:
             if aligned_face is None or aligned_face.size == 0:
                 return None
 
-            if is_distant:
-                aligned_face = enhance_aligned_face(aligned_face, is_distant_or_low_res=True)
+            # Always normalize illumination using CLAHE; apply unsharp masking if distant/low-res
+            aligned_face = enhance_aligned_face(aligned_face, is_distant_or_low_res=is_distant)
 
             blob1 = rec.preprocess(aligned_face)
             e1 = rec.session.run(rec.output_names, {rec.input_name: blob1})[0].ravel()
@@ -524,6 +636,53 @@ class FaceService:
                     "error": f"Face detection confidence is low ({int(det_conf * 100)}%). Please face the camera directly in clear light.",
                 }
 
+            # EDifFIQA Neural Quality Gate: reject blurry/occluded/poorly-lit faces
+            enrollment_quality = self._score_face_quality(best_uf, image_bgr=image_bgr)
+            if enrollment_quality < 0.30 and self.quality_scorer is not None:
+                return {
+                    "success": False,
+                    "error": f"Face image quality is too low ({int(enrollment_quality * 100)}%). "
+                             f"Please ensure clear lighting, no blur, and face the camera directly.",
+                }
+            if enrollment_quality < 0.30:
+                logger.warning("Low enrollment quality (%.2f) for %s but EDifFIQA not available — proceeding.", enrollment_quality, name)
+
+            # Landmark Pose Quality Gate: Ensure frontal face alignment during enrollment
+            if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
+                lms = np.array(best_uf.landmarks, dtype=np.float32)
+                if len(lms) >= 5:
+                    left_eye, right_eye, nose = lms[0], lms[1], lms[2]
+                    # Check Roll (head tilt angle)
+                    dx = float(right_eye[0] - left_eye[0])
+                    dy = float(right_eye[1] - left_eye[1])
+                    roll_deg = abs(float(np.degrees(np.arctan2(dy, dx))))
+                    if roll_deg > 18.0:
+                        return {
+                            "success": False,
+                            "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment for optimal recognition accuracy.",
+                        }
+                    # Check Yaw (head turned left/right via eye-to-nose symmetry)
+                    dist_l = float(np.linalg.norm(nose - left_eye))
+                    dist_r = float(np.linalg.norm(nose - right_eye))
+                    yaw_ratio = dist_l / max(dist_r, 1e-4)
+                    if yaw_ratio < 0.40 or yaw_ratio > 2.50:
+                        return {
+                            "success": False,
+                            "error": "Face is turned at an angle. Please look directly into the camera during enrollment for optimal recognition accuracy.",
+                        }
+                    # Check Pitch (head looking up or down)
+                    left_mouth, right_mouth = lms[3], lms[4]
+                    eye_center = (left_eye + right_eye) / 2.0
+                    mouth_center = (left_mouth + right_mouth) / 2.0
+                    eye_to_nose = float(np.linalg.norm(nose - eye_center))
+                    nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
+                    pitch_ratio = eye_to_nose / max(nose_to_mouth, 1e-4)
+                    if pitch_ratio < 0.35 or pitch_ratio > 3.0:
+                        return {
+                            "success": False,
+                            "error": "Head is tilted up or down. Please look straight at the camera during enrollment for optimal recognition accuracy.",
+                        }
+
             feature_512 = None
             if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
                 feature_512 = self.extract_tta_embedding(image_bgr, best_uf.landmarks)
@@ -540,14 +699,20 @@ class FaceService:
                         image_bgr, best_uf.landmarks, image_size=self.analyzer.recognizer.input_size
                     )
                     if aligned_face is not None:
-                        down40 = cv2.resize(aligned_face, (40, 40), interpolation=cv2.INTER_AREA)
-                        up40 = cv2.resize(down40, (112, 112), interpolation=cv2.INTER_CUBIC)
                         rec = self.analyzer.recognizer
-                        b_dist = rec.preprocess(enhance_aligned_face(up40, is_distant_or_low_res=True))
-                        e_dist = rec.session.run(rec.output_names, {rec.input_name: b_dist})[0].ravel()
-                        norm_d = np.linalg.norm(e_dist)
-                        if norm_d > 1e-8:
-                            features_to_store.append((e_dist / norm_d).astype(np.float32).reshape(1, 512))
+                        # Generate multi-scale synthetic distance anchors to cover
+                        # the full range of real-world quality degradation (40px, 56px, 80px)
+                        for anchor_sz in (40, 56, 80):
+                            try:
+                                down = cv2.resize(aligned_face, (anchor_sz, anchor_sz), interpolation=cv2.INTER_AREA)
+                                up = cv2.resize(down, (112, 112), interpolation=cv2.INTER_CUBIC)
+                                b_dist = rec.preprocess(enhance_aligned_face(up, is_distant_or_low_res=True))
+                                e_dist = rec.session.run(rec.output_names, {rec.input_name: b_dist})[0].ravel()
+                                norm_d = np.linalg.norm(e_dist)
+                                if norm_d > 1e-8:
+                                    features_to_store.append((e_dist / norm_d).astype(np.float32).reshape(1, 512))
+                            except Exception:
+                                pass
                 except Exception as dist_err:
                     logger.debug("Synthetic distance anchor generation skip: %s", dist_err)
 
@@ -561,11 +726,23 @@ class FaceService:
             if existing:
                 if "features" not in existing:
                     existing["features"] = [existing["feature"]]
-                for f_add in features_to_store:
+                if "quality_weights" not in existing:
+                    # Back-fill neutral quality weights for legacy samples
+                    existing["quality_weights"] = [0.5] * len(existing["features"])
+
+                # Primary TTA embedding gets the actual quality score;
+                # synthetic distance anchors get a lower weight (0.4) since
+                # they are artificial downscaled versions
+                sample_qualities = [enrollment_quality] + [0.4] * (len(features_to_store) - 1)
+
+                for i, f_add in enumerate(features_to_store):
+                    q_w = sample_qualities[i] if i < len(sample_qualities) else 0.4
                     if len(existing["features"]) < 10:
                         existing["features"].append(f_add)
+                        existing["quality_weights"].append(q_w)
                     else:
                         existing["features"][0] = f_add
+                        existing["quality_weights"][0] = q_w
 
                 existing["is_suspect"] = bool(is_suspect)
                 existing["threat_level"] = str(threat_level).upper()
@@ -573,7 +750,9 @@ class FaceService:
                 if notes:
                     existing["notes"] = str(notes).strip()
 
-                existing["centroid"] = self._compute_centroid(existing["features"])
+                existing["centroid"] = self._compute_centroid(
+                    existing["features"], quality_weights=existing.get("quality_weights")
+                )
                 self._save_database()
                 return {
                     "success": True,
@@ -585,7 +764,8 @@ class FaceService:
                     "is_suspect": existing["is_suspect"],
                     "threat_level": existing["threat_level"],
                     "category": existing["category"],
-                    "message": f"Added samples to {name} ({len(existing['features'])} total, 512-D).",
+                    "enrollment_quality": round(enrollment_quality, 3),
+                    "message": f"Added samples to {name} ({len(existing['features'])} total, 512-D, quality={enrollment_quality:.0%}).",
                 }
 
             person_id = f"person_{int(time.time())}_{uuid.uuid4().hex[:6]}"
@@ -605,7 +785,10 @@ class FaceService:
             image_url = f"/api/faces/thumbnail/{thumb_filename}"
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            centroid = self._compute_centroid(features_to_store)
+            centroid = self._compute_centroid(
+                features_to_store,
+                quality_weights=[enrollment_quality] + [0.4] * (len(features_to_store) - 1),
+            )
 
             new_record = {
                 "id": person_id,
@@ -613,6 +796,7 @@ class FaceService:
                 "features": features_to_store,
                 "feature": feature_512,
                 "centroid": centroid,
+                "quality_weights": [enrollment_quality] + [0.4] * (len(features_to_store) - 1),
                 "image_url": image_url,
                 "created_at": created_at,
                 "is_suspect": bool(is_suspect),
@@ -623,7 +807,7 @@ class FaceService:
             self.known_persons.append(new_record)
             self._save_database()
 
-            logger.info("Enrolled %s (ID: %s, 512-D UniFace).", name, person_id)
+            logger.info("Enrolled %s (ID: %s, 512-D UniFace, quality=%.2f).", name, person_id, enrollment_quality)
             return {
                 "success": True,
                 "person_id": person_id,
@@ -634,7 +818,8 @@ class FaceService:
                 "is_suspect": new_record["is_suspect"],
                 "threat_level": new_record["threat_level"],
                 "category": new_record["category"],
-                "message": f"Successfully enrolled {name} (512-D UniFace).",
+                "enrollment_quality": round(enrollment_quality, 3),
+                "message": f"Successfully enrolled {name} (512-D UniFace, quality={enrollment_quality:.0%}).",
             }
 
     def add_sample(
@@ -684,11 +869,14 @@ class FaceService:
         known_list: list[dict[str, Any]],
         min_match_score: float,
         is_distant: bool = False,
+        face_size: float = 0.0,
+        probe_quality: float = 0.5,
     ) -> tuple[str, float, bool, str, str, bool]:
         """
         Match a 512-D query embedding against all enrolled persons.
         Evaluates both precomputed identity centroids and stored sample vectors.
-        Uses distance-adaptive decision thresholding with Top-1 vs Top-2 margin guards.
+        Uses distance-adaptive and quality-adaptive decision thresholding
+        with centroid corroboration boost and smart margin guards.
         Returns (name, best_score, is_known, threat_level, category, is_ambiguous).
         """
         best_name = "Unknown"
@@ -698,18 +886,36 @@ class FaceService:
         best_threat_level = "LOW"
         best_category = "Unknown"
 
-        effective_thresh = min_match_score * 0.78 if is_distant else min_match_score
+        # Quality-adaptive and distance-adaptive thresholding
+        if is_distant:
+            effective_thresh = min_match_score * 0.72
+        elif 0 < face_size < 80:
+            # Small-ish but not full distant mode — moderate relaxation
+            effective_thresh = min_match_score * 0.85
+        else:
+            effective_thresh = min_match_score
 
+        # Adapt slightly based on probe quality: if degraded quality (<0.40), adapt threshold down
+        if probe_quality < 0.40 and effective_thresh > 0.25:
+            quality_factor = 0.90 + 0.10 * max(0.0, probe_quality / 0.40)
+            effective_thresh = max(0.24, effective_thresh * quality_factor)
+
+        if not known_list:
+            return best_name, best_score, is_known, best_threat_level, best_category, False
+
+        scored_candidates: list[tuple[dict[str, Any], float]] = []
         for p in known_list:
             p_best_score = -1.0
+            centroid_score = -1.0
 
             centroid = p.get("centroid")
             if centroid is not None and centroid.flatten().shape[0] == 512:
                 cos_c = compute_cosine_similarity(query_feat, centroid)
+                centroid_score = cos_c
                 if cos_c > p_best_score:
                     p_best_score = cos_c
 
-            p_features = p.get("features", [p["feature"]])
+            p_features = p.get("features") or ([p["feature"]] if "feature" in p else [])
             for k_feat in p_features:
                 if k_feat.flatten().shape[0] != 512:
                     continue
@@ -717,27 +923,46 @@ class FaceService:
                 if cos > p_best_score:
                     p_best_score = cos
 
-            if p_best_score > best_score:
-                second_best_score = best_score
-                best_score = p_best_score
-                margin_ok = (not is_distant) or (second_best_score <= -0.5) or (p_best_score - second_best_score >= 0.035)
-                if p_best_score >= effective_thresh and margin_ok:
-                    best_name = p["name"]
-                    is_known = True
-                    best_is_suspect = p.get("is_suspect", False)
-                    best_threat_level = p.get("threat_level", "HIGH" if best_is_suspect else "LOW")
-                    best_category = p.get(
-                        "category",
-                        "Wanted / BOLO" if best_is_suspect else "Authorized Personnel",
-                    )
-            elif p_best_score > second_best_score:
-                second_best_score = p_best_score
+            # Centroid corroboration boost: when the centroid (stable identity
+            # anchor) and the best individual sample both agree that this is a
+            # near-threshold match, add a small reliability bonus.
+            if centroid_score > 0 and p_best_score > 0:
+                centroid_gap = p_best_score - centroid_score
+                if centroid_gap < 0.06 and centroid_score >= effective_thresh * 0.85:
+                    p_best_score = min(p_best_score + 0.025, 1.0)
+
+            if p_best_score > -1.0:
+                scored_candidates.append((p, p_best_score))
+
+        if not scored_candidates:
+            return best_name, best_score, is_known, best_threat_level, best_category, False
+
+        # Sort candidates deterministically by descending cosine score
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        best_person, best_score = scored_candidates[0]
+        second_best_score = scored_candidates[1][1] if len(scored_candidates) > 1 else -1.0
+
+        # Margin check: only enforce for distant mode when gallery has >= 3 persons.
+        # With few enrolled persons the margin guard rejects valid matches unnecessarily.
+        margin_ok = True
+        if is_distant and len(scored_candidates) >= 3:
+            margin_ok = (best_score - second_best_score) >= 0.025
+
+        if best_score >= effective_thresh and margin_ok:
+            best_name = best_person["name"]
+            is_known = True
+            best_is_suspect = best_person.get("is_suspect", False)
+            best_threat_level = best_person.get("threat_level", "HIGH" if best_is_suspect else "LOW")
+            best_category = best_person.get(
+                "category",
+                "Wanted / BOLO" if best_is_suspect else "Authorized Personnel",
+            )
 
         is_ambiguous = bool(
             is_known
             and second_best_score > (effective_thresh * 0.85)
             and (best_score - second_best_score) < 0.035
-            and best_score < 0.55
+            and best_score < 0.50
         )
 
         return best_name, best_score, is_known, best_threat_level, best_category, is_ambiguous
@@ -834,11 +1059,16 @@ class FaceService:
                     if feat_512 is None:
                         continue
 
+                    probe_quality = self._score_face_quality(face_uf, image_bgr=up_crop)
                     best_name, best_score, is_known, best_threat_level, best_category, is_ambiguous = \
-                        self._match_embedding(feat_512, known_list, min_match_score, is_distant=True)
+                        self._match_embedding(
+                            feat_512, known_list, min_match_score,
+                            is_distant=True, face_size=fw,
+                            probe_quality=probe_quality,
+                        )
 
                     calibrated_conf = calibrate_arcface_confidence(
-                        max(0.0, best_score), threshold=(min_match_score * 0.78)
+                        max(0.0, best_score), threshold=(min_match_score * 0.72)
                     )
                     if is_ambiguous:
                         calibrated_conf = min(calibrated_conf, 65.0)
@@ -858,6 +1088,7 @@ class FaceService:
                         "is_ambiguous": is_ambiguous,
                         "confidence": round(det_conf, 4),
                         "match_score": round(max(0.0, best_score), 4),
+                        "quality": round(probe_quality, 4),
                         "l2_distance": 0.0,
                         "calibrated_conf": calibrated_conf,
                         "bbox": [round(bx1, 2), round(by1, 2), round(bx2, 2), round(by2, 2)],
@@ -940,11 +1171,16 @@ class FaceService:
                 if feat_512 is None:
                     continue
 
+                probe_quality = self._score_face_quality(face_uf, image_bgr=tile_crop)
                 best_name, best_score, is_known, best_threat_level, best_category, is_ambiguous = \
-                    self._match_embedding(feat_512, known_list, min_match_score, is_distant=True)
+                    self._match_embedding(
+                        feat_512, known_list, min_match_score,
+                        is_distant=True, face_size=fw,
+                        probe_quality=probe_quality,
+                    )
 
                 calibrated_conf = calibrate_arcface_confidence(
-                    max(0.0, best_score), threshold=(min_match_score * 0.78)
+                    max(0.0, best_score), threshold=(min_match_score * 0.72)
                 )
                 best_is_suspect = is_known and bool(
                     next((p.get("is_suspect", False) for p in known_list if p["name"] == best_name), False)
@@ -956,6 +1192,7 @@ class FaceService:
                     "is_ambiguous": is_ambiguous,
                     "confidence": round(float(face_uf.confidence), 4),
                     "match_score": round(max(0.0, best_score), 4),
+                    "quality": round(probe_quality, 4),
                     "l2_distance": 0.0,
                     "calibrated_conf": calibrated_conf,
                     "bbox": [round(bx1, 2), round(by1, 2), round(bx2, 2), round(by2, 2)],
@@ -1059,6 +1296,10 @@ class FaceService:
                     continue
 
                 is_distant_crop = fw < 60 or fh < 60
+
+                # EDifFIQA probe quality for threshold adaptation
+                probe_quality = self._score_face_quality(face_uf, image_bgr=image_bgr)
+
                 feat_512 = None
                 if hasattr(face_uf, "landmarks") and face_uf.landmarks is not None:
                     landmarks_native = (face_uf.landmarks * inv_scale).astype(np.float32)
@@ -1071,9 +1312,13 @@ class FaceService:
                     continue
 
                 best_name, best_score, is_known, best_threat_level, best_category, is_ambiguous = \
-                    self._match_embedding(feat_512, known_list, min_match_score, is_distant=is_distant_crop)
+                    self._match_embedding(
+                        feat_512, known_list, min_match_score,
+                        is_distant=is_distant_crop, face_size=fw,
+                        probe_quality=probe_quality,
+                    )
 
-                effective_th = min_match_score * 0.78 if is_distant_crop else min_match_score
+                effective_th = min_match_score * 0.72 if is_distant_crop else min_match_score
                 calibrated_conf = calibrate_arcface_confidence(
                     max(0.0, best_score), threshold=effective_th
                 )
@@ -1095,6 +1340,7 @@ class FaceService:
                     "is_ambiguous": is_ambiguous,
                     "confidence": round(det_conf, 4),
                     "match_score": round(max(0.0, best_score), 4),
+                    "quality": round(probe_quality, 4),
                     "l2_distance": 0.0,
                     "calibrated_conf": calibrated_conf,
                     "bbox": [round(bx1, 2), round(by1, 2), round(bx2, 2), round(by2, 2)],
