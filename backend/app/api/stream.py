@@ -695,18 +695,25 @@ def stream_generator(
                     except Exception as exc:
                         logger.debug("In-stream inference skip: %s", exc)
 
-            # Stage 2: Biometric Facial Recognition (Accelerated 5x with native 640px downscaled detection)
+            # Stage 2: Biometric Facial Recognition (with Distant Person-RoI & Multi-Scale Scanning)
             if enable_face_recognition:
                 if frame_count % 4 == 2 or not cached_faces:
                     try:
                         from app.pipeline.face_service import face_service
+                        person_boxes = [
+                            d.get("box") for d in cached_detections
+                            if (str(d.get("class_name", "")).lower() in ("person", "human", "pedestrian") or d.get("class_id") == 0)
+                            and d.get("box")
+                        ]
                         cached_faces = face_service.detect_and_recognize(
                             frame,
-                            min_match_score=0.34,
-                            min_face_size=24,
-                            det_score_thresh=0.45,
+                            min_match_score=None,
+                            min_face_size=12,
+                            det_score_thresh=0.25,
                             use_temporal_smoothing=True,
-                            max_det_width=640,
+                            max_det_width=1280,
+                            enable_distant_mode=True,
+                            person_boxes=person_boxes if person_boxes else None,
                         )
                     except Exception as exc:
                         logger.debug("Live stream face recognition exception: %s", exc)

@@ -62,14 +62,26 @@ def list_enrolled_faces() -> dict:
 
 @router.get("/status")
 def get_face_engine_status() -> dict:
-    """Get operational status of YuNet and SFace models and enrolled personnel count."""
+    """Get operational status of the active face engine and enrolled personnel count."""
     return {
-        "status": "ready" if (face_service.detector and face_service.recognizer) else "degraded",
-        "detector_loaded": face_service.detector is not None,
-        "recognizer_loaded": face_service.recognizer is not None,
+        "status": "ready" if face_service.is_ready else "degraded",
+        "engine": face_service.engine_name,
+        "embedding_dim": face_service.embedding_dim,
+        "match_threshold": face_service.match_threshold,
+        "detector_loaded": (
+            face_service.analyzer is not None
+            if face_service.use_uniface
+            else face_service.detector is not None
+        ),
+        "recognizer_loaded": (
+            face_service.analyzer is not None
+            if face_service.use_uniface
+            else face_service.recognizer is not None
+        ),
         "enrolled_count": len(face_service.known_persons),
-        "yunet_model": str(face_service.yunet_path.name),
-        "sface_model": str(face_service.sface_path.name),
+        # Legacy fields kept for frontend compatibility
+        "yunet_model": str(face_service.yunet_path.name) if not face_service.use_uniface else "N/A (UniFace active)",
+        "sface_model": str(face_service.sface_path.name) if not face_service.use_uniface else "N/A (UniFace active)",
     }
 
 
@@ -190,10 +202,12 @@ async def scan_image(
     file: Optional[UploadFile] = File(None),
     image_base64: Optional[str] = Form(None),
     min_match_score: float = Form(0.40),
-    min_face_size: int = Form(40),
+    min_face_size: int = Form(16),
+    enable_distant_mode: bool = Form(False),
 ) -> dict:
     """
     Perform face detection and identity recognition on a static image.
+    Supports enable_distant_mode for high-resolution cameras and small distant faces.
     Returns detected face boxes, identity names, match scores, and annotated visualization.
     """
     t0 = time.perf_counter()
@@ -211,8 +225,10 @@ async def scan_image(
     faces = face_service.detect_and_recognize(
         image_bgr,
         min_match_score=min_match_score,
-        min_face_size=min_face_size,
+        min_face_size=12 if enable_distant_mode else min_face_size,
+        det_score_thresh=0.25 if enable_distant_mode else 0.35,
         use_temporal_smoothing=False,
+        enable_distant_mode=enable_distant_mode,
     )
 
     annotated = face_service.draw_faces(image_bgr, faces)
@@ -406,15 +422,16 @@ def _generate_face_stream(
                     scale = 1280.0 / w
                     frame = cv2.resize(frame, (1280, int(h * scale)))
 
-                # Run Face detection & recognition with surveillance parameters and temporal smoothing
+                # Run Face detection & recognition with surveillance parameters, temporal smoothing, and distant mode
                 try:
                     faces = face_service.detect_and_recognize(
                         frame,
-                        min_match_score=0.34,
-                        min_face_size=24,
-                        det_score_thresh=0.45,
+                        min_match_score=None,
+                        min_face_size=12,
+                        det_score_thresh=0.25,
                         use_temporal_smoothing=True,
-                        max_det_width=480,
+                        max_det_width=1280,
+                        enable_distant_mode=True,
                     )
                     annotated = face_service.draw_faces(frame, faces)
                 except Exception as model_err:
@@ -555,19 +572,20 @@ async def face_websocket_stream(websocket: WebSocket):
                 continue
 
             h, w = frame.shape[:2]
-            if w > 640:
-                scale = 640.0 / w
-                frame = cv2.resize(frame, (640, int(h * scale)))
+            if w > 960:
+                scale = 960.0 / w
+                frame = cv2.resize(frame, (960, int(h * scale)))
 
-            # Run Face detection & recognition with temporal smoothing and surveillance thresholds
+            # Run Face detection & recognition with temporal smoothing, surveillance thresholds, and distant mode
             try:
                 faces = face_service.detect_and_recognize(
                     frame,
-                    min_match_score=0.34,
-                    min_face_size=24,
-                    det_score_thresh=0.45,
+                    min_match_score=None,
+                    min_face_size=12,
+                    det_score_thresh=0.25,
                     use_temporal_smoothing=True,
-                    max_det_width=480,
+                    max_det_width=1280,
+                    enable_distant_mode=True,
                 )
                 annotated = face_service.draw_faces(frame, faces)
             except Exception as model_err:

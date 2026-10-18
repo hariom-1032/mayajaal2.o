@@ -625,11 +625,19 @@ async def video_inference(
                     # ── Periodic Biometric Suspect Facial Scan ───────────────
                     if f_idx % face_scan_interval == 0:
                         try:
+                            person_boxes = [
+                                d.get("box") for d in detections
+                                if (str(d.get("class_name", "")).lower() in ("person", "human", "pedestrian") or d.get("class_id") == 0)
+                                and d.get("box")
+                            ]
                             detected_faces = face_service.detect_and_recognize(
                                 frame,
-                                min_match_score=0.40,
-                                min_face_size=35,
+                                min_match_score=None,
+                                min_face_size=12,
+                                det_score_thresh=0.25,
                                 use_temporal_smoothing=True,
+                                enable_distant_mode=True,
+                                person_boxes=person_boxes if person_boxes else None,
                             )
                             raw_dets = list(detections)
                             for f in detected_faces:

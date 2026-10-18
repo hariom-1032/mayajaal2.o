@@ -107,7 +107,11 @@ class Postprocessor:
         Decode output tensors into a list of detection lists (one list per frame in the batch).
         Supports batch sizes from 1 to 6 (or more) for all model architectures.
         """
-        if not outputs or not isinstance(outputs[0], np.ndarray):
+        if outputs is None:
+            return []
+        if isinstance(outputs, np.ndarray):
+            outputs = [outputs]
+        if len(outputs) == 0 or not isinstance(outputs[0], np.ndarray):
             return []
 
         primary_output = outputs[0]

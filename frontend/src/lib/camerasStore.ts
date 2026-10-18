@@ -144,7 +144,7 @@ export const camerasStore = {
       latitude: lat,
       longitude: lng,
       coordinates: [lng, lat],
-      modelAssigned: input.modelAssigned || "best.onnx (Threat Detector)",
+      modelAssigned: input.modelAssigned || "vehicle_detector.onnx (Vehicle Detector)",
       resolution: input.resolution || "1080p FHD (1920x1080)",
       fps: input.fps || 30,
       confThreshold: input.confThreshold ?? 0.75,

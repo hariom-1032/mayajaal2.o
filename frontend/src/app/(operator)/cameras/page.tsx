@@ -642,7 +642,7 @@ export default function CamerasPage() {
                       </td>
                       <td className="p-3.5">
                         <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px] font-semibold">
-                          {camera.modelAssigned || "best.onnx"}
+                          {camera.modelAssigned || "vehicle_detector.onnx"}
                         </span>
                         <div className="text-[10px] text-slate-500 mt-0.5">
                           {camera.resolution || "1080p"} • {camera.fps || 30} FPS
@@ -776,7 +776,7 @@ export default function CamerasPage() {
 
                 <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="text-[10px] font-mono text-slate-400">
-                    Model: {camera.modelAssigned || "best.onnx"}
+                    Model: {camera.modelAssigned || "vehicle_detector.onnx"}
                   </span>
                   <div className="flex items-center gap-1">
                     <button
@@ -957,7 +957,7 @@ export default function CamerasPage() {
 
               {/* Live Overlay HUD */}
               <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-xs px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-400">
-                REC • 1080p @ {previewCamera.fps || 30} FPS • {previewCamera.modelAssigned || "best.onnx"}
+                REC • 1080p @ {previewCamera.fps || 30} FPS • {previewCamera.modelAssigned || "vehicle_detector.onnx"}
               </div>
 
               <div className="absolute top-3 right-3 bg-black/60 backdrop-blur-xs px-2.5 py-1 rounded-md text-[10px] font-mono text-slate-300">
@@ -1153,7 +1153,7 @@ function CameraCardItem({
                 AI Model
               </span>
               <span className="font-semibold text-slate-800 truncate block font-mono">
-                {camera.modelAssigned?.split(" ")[0] || "best.onnx"}
+                {camera.modelAssigned?.split(" ")[0] || "vehicle_detector.onnx"}
               </span>
             </div>
             <div>
@@ -1257,7 +1257,7 @@ function AddCameraModal({
   const [longitude, setLongitude] = useState(74.6640);
 
   // Model & Params
-  const [modelAssigned, setModelAssigned] = useState("best.onnx (Threat Detector)");
+  const [modelAssigned, setModelAssigned] = useState("vehicle_detector.onnx (Vehicle Detector)");
   const [resolution, setResolution] = useState("1080p FHD (1920x1080)");
   const [fps, setFps] = useState(30);
   const [confThreshold, setConfThreshold] = useState(0.75);
@@ -1593,7 +1593,7 @@ function AddCameraModal({
                   onChange={(e) => setModelAssigned(e.target.value)}
                   className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none font-medium text-slate-700"
                 >
-                  <option value="best.onnx (Threat Detector)">best.onnx (Threat Detector)</option>
+                  <option value="vehicle_detector.onnx (Vehicle Detector)">vehicle_detector.onnx (Vehicle Detector)</option>
                   <option value="yolov8n-border.onnx">yolov8n-border.onnx</option>
                   <option value="anpr_v2.onnx">anpr_v2.onnx</option>
                   <option value="thermal_flir.onnx">thermal_flir.onnx</option>
@@ -1709,7 +1709,7 @@ function EditCameraModal({
   const [longitude, setLongitude] = useState(camera.longitude);
 
   // Model & Params
-  const [modelAssigned, setModelAssigned] = useState(camera.modelAssigned || "best.onnx (Threat Detector)");
+  const [modelAssigned, setModelAssigned] = useState(camera.modelAssigned || "vehicle_detector.onnx (Vehicle Detector)");
   const [resolution, setResolution] = useState(camera.resolution || "1080p FHD (1920x1080)");
   const [fps, setFps] = useState(camera.fps || 30);
   const [confThreshold, setConfThreshold] = useState(camera.confThreshold ?? 0.75);
@@ -1996,7 +1996,7 @@ function EditCameraModal({
                   onChange={(e) => setModelAssigned(e.target.value)}
                   className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none font-medium text-slate-700"
                 >
-                  <option value="best.onnx (Threat Detector)">best.onnx (Threat Detector)</option>
+                  <option value="vehicle_detector.onnx (Vehicle Detector)">vehicle_detector.onnx (Vehicle Detector)</option>
                   <option value="yolov8n-border.onnx">yolov8n-border.onnx</option>
                   <option value="anpr_v2.onnx">anpr_v2.onnx</option>
                   <option value="thermal_flir.onnx">thermal_flir.onnx</option>

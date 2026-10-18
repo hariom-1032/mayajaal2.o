@@ -174,13 +174,14 @@ class ContinuousFaceScanner:
                 else:
                     small_frame = frame
 
-                # Run YuNet + SFace recognition with surveillance-calibrated parameters
+                # Run YuNet + SFace recognition with surveillance-calibrated parameters & distant face mode
                 faces = face_service.detect_and_recognize(
                     small_frame,
-                    min_match_score=0.34,
-                    min_face_size=24,
-                    det_score_thresh=0.45,
+                    min_match_score=None,
+                    min_face_size=12,
+                    det_score_thresh=0.25,
                     use_temporal_smoothing=False,
+                    enable_distant_mode=True,
                 )
 
                 # Inspect detected faces for suspects

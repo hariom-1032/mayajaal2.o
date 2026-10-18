@@ -369,11 +369,19 @@ async def video_tracking(
                     # ── Periodic Biometric Suspect Facial Scan ───────────────
                     if f_idx % face_scan_interval == 0:
                         try:
+                            person_boxes = [
+                                td.get("box") for td in tracked_dicts
+                                if (str(td.get("class_name", "")).lower() in ("person", "human", "pedestrian") or td.get("class_id") == 0)
+                                and td.get("box")
+                            ]
                             detected_faces = face_service.detect_and_recognize(
                                 frame,
-                                min_match_score=0.40,
-                                min_face_size=35,
+                                min_match_score=None,
+                                min_face_size=12,
+                                det_score_thresh=0.25,
                                 use_temporal_smoothing=True,
+                                enable_distant_mode=True,
+                                person_boxes=person_boxes if person_boxes else None,
                             )
                             for f in detected_faces:
                                 is_threat = bool(f.get("is_threat", False))

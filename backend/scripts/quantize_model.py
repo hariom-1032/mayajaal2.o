@@ -10,7 +10,6 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 def quantize_all():
     models_to_quantize = [
-        "best.onnx",
         "face_recognition_sface.onnx",
         "vehicle_detector.onnx",
     ]

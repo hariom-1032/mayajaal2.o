@@ -82,7 +82,7 @@ class CameraCreateRequest(BaseModel):
     isRtsp: bool = True
     latitude: float = Field(..., ge=-90.0, le=90.0)
     longitude: float = Field(..., ge=-180.0, le=180.0)
-    modelAssigned: Optional[str] = "best.onnx (Threat Detector)"
+    modelAssigned: Optional[str] = "vehicle_detector.onnx (Vehicle Detector)"
     resolution: Optional[str] = "1080p FHD (1920x1080)"
     fps: Optional[int] = Field(30, ge=1, le=120)
     confThreshold: Optional[float] = Field(0.75, ge=0.1, le=1.0)
@@ -181,7 +181,7 @@ async def create_camera(payload: CameraCreateRequest) -> dict[str, Any]:
         "latitude": payload.latitude,
         "longitude": payload.longitude,
         "coordinates": [payload.longitude, payload.latitude],
-        "modelAssigned": payload.modelAssigned or "best.onnx (Threat Detector)",
+        "modelAssigned": payload.modelAssigned or "vehicle_detector.onnx (Vehicle Detector)",
         "resolution": payload.resolution or "1080p FHD (1920x1080)",
         "fps": payload.fps or 30,
         "confThreshold": payload.confThreshold or 0.75,

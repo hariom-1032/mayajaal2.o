@@ -60,12 +60,11 @@ flowchart TD
         end
 
         subgraph ModelStore["Model Registry (backend/models)"]
-            M1["best.onnx (Threat / Person)"]
-            M2["vehicle_detector.onnx"]
-            M3["anpr_plate.onnx"]
-            M4["face_detection_yunet.onnx"]
-            M5["face_recognition_sface.onnx"]
-            M6["osnet_x0_25_msmt17.onnx"]
+            M1["vehicle_detector.onnx"]
+            M2["anpr_plate.onnx"]
+            M3["face_detection_yunet.onnx"]
+            M4["face_recognition_sface.onnx"]
+            M5["osnet_x0_25_msmt17.onnx"]
         end
 
         InferenceEngine --> ModelStore
@@ -96,7 +95,6 @@ All production inference models run through the optimized ONNX Runtime engine lo
 
 | Model File | Type | Framework / Source | Purpose |
 | :--- | :--- | :--- | :--- |
-| `best.onnx` | Object Detection | YOLOv8 | Primary threat detection (person, weapon, tactical objects). |
 | `vehicle_detector.onnx` | Object Detection | YOLOv8s | Detects cars, trucks, motorcycles, buses in perimeter zones. |
 | `anpr_plate.onnx` | Object Detection | YOLOv8 Custom | High-resolution license plate bounding box localization. |
 | `face_detection_yunet.onnx` | Face Detection | OpenCV YuNet | Lightweight, high-precision edge face detector. |

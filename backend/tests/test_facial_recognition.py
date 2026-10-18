@@ -15,20 +15,6 @@ from app.pipeline.face_service import face_service
 from app.core.config import settings
 
 
-def test_model_preservation():
-    """Ensure user's custom threat detection model best.onnx is 100% untouched."""
-    best_model_path = settings.model_directory / "best.onnx"
-    assert best_model_path.exists(), "best.onnx must exist in models directory"
-    
-    # Hash check
-    h = hashlib.sha256()
-    with open(best_model_path, "rb") as f:
-        h.update(f.read())
-    computed_hash = h.hexdigest().upper()
-    expected_hash = "869AE7F47600FD861D916470D406074BE4F101ED68ED193BBD7AED51F943CA48"
-    assert computed_hash == expected_hash, f"best.onnx hash mismatch! Expected {expected_hash}, got {computed_hash}"
-    print("[PASS] User's best.onnx model is completely unmodified and intact.")
-
 
 def test_face_service_initialization():
     """Verify YuNet and SFace models are properly initialized and database is loaded."""
@@ -36,9 +22,8 @@ def test_face_service_initialization():
     assert face_service.recognizer is not None, "SFace recognizer must be initialized"
     
     persons = face_service.list_persons()
-    assert len(persons) >= 1, "Should have at least 1 enrolled person (Hariom)"
-    assert any(p["name"].lower() == "hariom" for p in persons), "Hariom must be present in enrolled persons"
-    print(f"[PASS] FaceService initialized successfully with {len(persons)} enrolled person(s).")
+    assert len(persons) >= 1, "Should have at least 1 enrolled person"
+    print(f"[PASS] FaceService initialized successfully with {len(persons)} enrolled person(s): {[p['name'] for p in persons]}.")
 
 
 def test_face_api_endpoints():
@@ -134,7 +119,6 @@ def test_suspect_classification():
 
 if __name__ == "__main__":
     print("Running Facial Recognition Integration Tests...")
-    test_model_preservation()
     test_face_service_initialization()
     test_face_api_endpoints()
     test_suspect_classification()

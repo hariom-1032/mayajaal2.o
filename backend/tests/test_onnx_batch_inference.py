@@ -112,14 +112,17 @@ def run_tests():
     # Test 4: Live ONNX Model Batch Inference via InferenceService
     # -------------------------------------------------------------
     total_tests += 1
-    print("\n[Test 4] Live ONNX Model Batch Inference (best.onnx)")
+    print("\n[Test 4] Live ONNX Model Batch Inference (vehicle_detector.onnx)")
+    veh_model_path = settings.model_directory / "vehicle_detector.onnx"
+    if not model_manager.is_loaded("vehicle_detector"):
+        model_manager.load_model("vehicle_detector", veh_model_path)
     for b in [2, 4, 6]:
         test_frames = [np.full((480, 640, 3), 128, dtype=np.uint8) for _ in range(b)]
         batch_tensor = preprocessor.process_batch(test_frames)
         orig_sizes = [(640, 480) for _ in range(b)]
 
         result = inference_service.predict(
-            model_name="best.onnx",
+            model_name="vehicle_detector",
             input_data=batch_tensor,
             postprocess=True,
             original_image_sizes=orig_sizes,
@@ -130,7 +133,7 @@ def run_tests():
         assert isinstance(batch_dets, list) and len(batch_dets) == b, f"Expected {b} batch detections"
         print(f"   Batch size {b}: latency = {result.get('inference_time_ms')}ms ({round(result.get('inference_time_ms', 0) / b, 2)}ms/frame), output frames = {len(batch_dets)}")
 
-    print("   [PASS] Live best.onnx batch inference succeeds for B=2, 4, 6")
+    print("   [PASS] Live vehicle_detector.onnx batch inference succeeds for B=2, 4, 6")
     passed_tests += 1
 
     # -------------------------------------------------------------

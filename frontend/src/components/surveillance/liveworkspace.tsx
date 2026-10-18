@@ -414,12 +414,12 @@ export function LiveWorkspace() {
   // Load default model helper if no models loaded
   const handleLoadDefaultModel = async () => {
     setLoadingModel(true);
-    setStatusMessage("Loading best.onnx into engine...");
+    setStatusMessage("Loading vehicle_detector.onnx into engine...");
     try {
-      await api.loadModel("best", "best.onnx");
+      await api.loadModel("vehicle_detector", "vehicle_detector.onnx");
       await refetch();
-      setSelectedModel("best");
-      setStatusMessage("Model 'best' loaded successfully.");
+      setSelectedModel("vehicle_detector");
+      setStatusMessage("Model 'vehicle_detector' loaded successfully.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load model";
       setStatusMessage(`Error: ${msg}`);

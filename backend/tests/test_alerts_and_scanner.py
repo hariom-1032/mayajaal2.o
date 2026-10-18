@@ -17,19 +17,6 @@ from app.pipeline.alert_service import alert_service, SNAPSHOTS_DIR
 from app.pipeline.feed_scanner import feed_scanner_service
 
 
-def test_model_preservation():
-    """Ensure user's custom threat detection model best.onnx is 100% untouched."""
-    best_model_path = settings.model_directory / "best.onnx"
-    assert best_model_path.exists(), "best.onnx must exist in models directory"
-
-    h = hashlib.sha256()
-    with open(best_model_path, "rb") as f:
-        h.update(f.read())
-    computed_hash = h.hexdigest().upper()
-    expected_hash = "869AE7F47600FD861D916470D406074BE4F101ED68ED193BBD7AED51F943CA48"
-    assert computed_hash == expected_hash, f"best.onnx hash mismatch! Expected {expected_hash}, got {computed_hash}"
-    print("[PASS] User's best.onnx model is completely unmodified and intact.")
-
 
 def test_alert_service_lifecycle():
     """Test AlertService creation, filtering, acknowledgement, and ring buffer."""
@@ -245,7 +232,6 @@ def cleanup_test_data():
 if __name__ == "__main__":
     print("\n--- Running Alerts, Scanner, and Trajectory Test Suite ---")
     try:
-        test_model_preservation()
         test_alert_service_lifecycle()
         test_continuous_face_scanner_telemetry()
         test_alerts_api_endpoints()

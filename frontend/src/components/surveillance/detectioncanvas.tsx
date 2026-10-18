@@ -12,7 +12,7 @@ interface DetectionCanvasProps {
 }
 
 const CLASS_COLORS: Record<string, string> = {
-  // Primary Border Threat Classes from best.onnx
+  // Primary Border Threat Classes
   firearm: "#ef4444", // High threat - Red
   explosive: "#dc2626", // Extreme threat - Dark Crimson
   melee_weapon: "#f43f5e", // Threat - Rose

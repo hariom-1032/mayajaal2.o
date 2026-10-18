@@ -29,18 +29,6 @@ logger = get_logger("SIH26187.API")
 async def lifespan(app: FastAPI):
     logger.info("SIH26187 backend starting.")
 
-    # Automatically load best.onnx if present in models directory
-    best_model_path = settings.model_directory / "best.onnx"
-    if best_model_path.exists():
-        try:
-            from app.core.runtime import model_manager
-
-            if not model_manager.is_loaded("best"):
-                model_manager.load_model("best", best_model_path)
-                logger.info("Auto-loaded primary threat detection model 'best' from %s", best_model_path)
-        except Exception as exc:
-            logger.warning("Could not auto-load primary model 'best': %s", exc)
-
     # Initialize alert broadcaster event loop (ContinuousFaceScanner remains OFF by default)
     try:
         from app.pipeline.alert_service import alert_service
