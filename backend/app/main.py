@@ -1,5 +1,22 @@
 import asyncio
 from contextlib import asynccontextmanager
+import os
+import sys
+
+# Ensure CUDA and cuDNN libraries from PyTorch or CUDA toolkit are in DLL search path on Windows
+if sys.platform == "win32":
+    try:
+        import importlib.util
+
+        torch_spec = importlib.util.find_spec("torch")
+        if torch_spec and torch_spec.submodule_search_locations:
+            torch_lib = os.path.join(list(torch_spec.submodule_search_locations)[0], "lib")
+            if os.path.isdir(torch_lib):
+                if hasattr(os, "add_dll_directory"):
+                    os.add_dll_directory(torch_lib)
+                os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
