@@ -22,7 +22,7 @@ class ContinuousFaceScanner:
     """
     Continuous Multi-Feed Background Video Scanner for MAATRIX.
     Monitors registered camera streams, periodically decodes frames,
-    performs YuNet + SFace biometric detection against enrolled suspects,
+    performs UniFace (512-D) biometric detection against enrolled suspects,
     and automatically triggers real-time security alerts with snapshot forensics.
     """
 
@@ -174,7 +174,7 @@ class ContinuousFaceScanner:
                 else:
                     small_frame = frame
 
-                # Run YuNet + SFace recognition with surveillance-calibrated parameters & distant face mode
+                # Run UniFace recognition with surveillance-calibrated parameters & distant face mode
                 faces = face_service.detect_and_recognize(
                     small_frame,
                     min_match_score=None,

@@ -519,7 +519,7 @@ async def face_websocket_stream(websocket: WebSocket):
     """
     Bi-directional real-time WebSocket stream for client-side webcams.
     Receives video frame blobs from any remote browser (getUserMedia) across the network,
-    runs YuNet face detection & SFace identity recognition on the backend server,
+    runs UniFace (RetinaFace + AdaFace 512-D) biometric recognition on the backend server,
     and returns tactical annotated HUD frames to the client in real time.
     Uses an internal queue of maxsize=1 to drop any stale queued frames, ensuring strictly zero lag.
     """
