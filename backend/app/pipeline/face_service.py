@@ -210,6 +210,13 @@ class FaceService:
         self.tracks: dict[int, dict[str, Any]] = {}
         self.next_track_id: int = 1
 
+        # Number of consecutive Unknown frames before a confirmed-identity track releases its lock
+        # Increase this value for more stability; decrease for faster identity release on occlusion
+        self.identity_drop_tolerance: int = 6
+
+        # Minimum number of known votes required to confirm and lock an identity on a track
+        self.identity_lock_threshold: int = 2
+
         self._init_models()
         self.load_database()
 
@@ -1507,33 +1514,77 @@ class FaceService:
                     "score": det["match_score"],
                     "calibrated": det["calibrated_conf"],
                 })
-                if len(track["history"]) > 6:
+                if len(track["history"]) > 8:
                     track["history"].pop(0)
 
                 known_votes = [h for h in track["history"] if h["is_known"]]
                 total_votes = len(track["history"])
 
-                # Determine if identity should be stabilized:
-                # 1. If current detection is known, confirm if consistent with track
-                # 2. If current detection is unknown, only bridge momentary drops if track
-                #    has a solid majority of known votes (>= 3 votes and >= 50% ratio).
-                #    This prevents a single noisy false match from "poisoning" the track.
-                should_stabilize = False
-                if det.get("is_known"):
-                    should_stabilize = True
-                elif len(known_votes) >= 3 and (len(known_votes) / max(1, total_votes)) >= 0.50:
-                    should_stabilize = True
+                # --- IDENTITY LOCK / HYSTERESIS ---
+                # Once a track's identity is confirmed (>= identity_lock_threshold known votes),
+                # we store a "locked_name" on the track.  Momentary "Unknown" frames
+                # are silently overridden by the locked identity so the label stays stable
+                # on screen.  The lock is only released after `identity_drop_tolerance`
+                # consecutive Unknown frames, indicating a genuine identity change / departure.
+                locked_name: Optional[str] = track.get("locked_name")
+                locked_score: float = track.get("locked_score", 0.0)
+                locked_calibrated: float = track.get("locked_calibrated", 0.0)
+                unknown_streak: int = track.get("unknown_streak", 0)
 
-                if should_stabilize and known_votes:
+                # Update the lock state based on this new frame
+                if det.get("is_known") and len(known_votes) >= self.identity_lock_threshold:
+                    # Confirm / upgrade the locked identity
+                    names_so_far = [h["name"] for h in known_votes]
+                    majority_name = max(set(names_so_far), key=names_so_far.count)
+
+                    # Only update locked_name when majority agrees (prevents noisy takeover)
+                    if names_so_far.count(majority_name) >= self.identity_lock_threshold:
+                        track["locked_name"] = majority_name
+                        track["locked_score"] = max(h["score"] for h in known_votes if h["name"] == majority_name)
+                        track["locked_calibrated"] = max(h["calibrated"] for h in known_votes if h["name"] == majority_name)
+                        locked_name = track["locked_name"]
+                        locked_score = track["locked_score"]
+                        locked_calibrated = track["locked_calibrated"]
+
+                    track["unknown_streak"] = 0
+                    unknown_streak = 0
+                else:
+                    # This frame is Unknown (or < lock threshold): increment streak
+                    unknown_streak += 1
+                    track["unknown_streak"] = unknown_streak
+
+                    # If we have a stable locked identity and the drop streak hasn't
+                    # crossed the tolerance, override Unknown with the locked label.
+                    if locked_name is not None and unknown_streak <= self.identity_drop_tolerance:
+                        known_match = next(
+                            (p for p in self.known_persons if p["name"].lower() == locked_name.lower()), None
+                        )
+                        if known_match:
+                            is_suspect_val = known_match.get("is_suspect", False)
+                            threat_lvl_val = known_match.get("threat_level", "HIGH" if is_suspect_val else "LOW")
+                            cat_val = known_match.get("category", "Wanted / BOLO" if is_suspect_val else "Authorized Personnel")
+
+                            det["name"] = locked_name
+                            det["is_known"] = True
+                            det["is_threat"] = is_suspect_val
+                            det["threat_level"] = threat_lvl_val if is_suspect_val else "NONE"
+                            det["category"] = cat_val
+                            det["match_score"] = round(locked_score, 4)
+                            det["calibrated_conf"] = round(locked_calibrated, 1)
+                            det["class_name"] = f"🚨 SUSPECT: {locked_name}" if is_suspect_val else f"Face: {locked_name}"
+
+                            final_results.append(det)
+                            continue  # Skip normal stabilize path for this frame
+
+                    elif unknown_streak > self.identity_drop_tolerance:
+                        # Release the lock — identity has genuinely changed / person left
+                        track["locked_name"] = None
+                        track["locked_score"] = 0.0
+                        track["locked_calibrated"] = 0.0
+
+                # Normal stabilize path (for current-frame-known detections)
+                if det.get("is_known") and known_votes:
                     candidate_votes = list(known_votes)
-                    if det.get("is_known") and not any(h["name"] == det["name"] for h in candidate_votes):
-                        candidate_votes.append({
-                            "name": det["name"],
-                            "is_known": True,
-                            "score": det["match_score"],
-                            "calibrated": det["calibrated_conf"],
-                        })
-
                     names = [h["name"] for h in candidate_votes]
                     stabilized_name = max(set(names), key=names.count)
                     avg_score = max(h["score"] for h in candidate_votes)
@@ -1565,6 +1616,10 @@ class FaceService:
                         "calibrated": det["calibrated_conf"],
                     }],
                     "last_seen": now,
+                    "locked_name": None,
+                    "locked_score": 0.0,
+                    "locked_calibrated": 0.0,
+                    "unknown_streak": 0,
                 }
 
             final_results.append(det)
@@ -1581,14 +1636,23 @@ class FaceService:
                     if last_h.get("is_known") and last_h.get("name") != "Unknown":
                         last_h["is_known"] = False
                         last_h["name"] = "Unknown"
+                    # Also release lock if 1-to-1 enforcement revoked this identity
+                    if self.tracks[tid].get("locked_name") is not None:
+                        self.tracks[tid]["locked_name"] = None
+                        self.tracks[tid]["locked_score"] = 0.0
+                        self.tracks[tid]["locked_calibrated"] = 0.0
 
         return final_results
 
     def _age_tracks(self, now: Optional[float] = None) -> None:
-        """Evict stale tracks that haven't been detected for more than 2.5 seconds."""
+        """Evict stale tracks that haven't been detected for more than 4 seconds.
+
+        4s gives enough buffer to survive brief occlusions (person blocked by car/post)
+        without destroying the track history and identity lock that prevents flickering.
+        """
         if now is None:
             now = time.time()
-        stale_tids = [tid for tid, track in self.tracks.items() if (now - track["last_seen"]) > 2.5]
+        stale_tids = [tid for tid, track in self.tracks.items() if (now - track["last_seen"]) > 4.0]
         for tid in stale_tids:
             del self.tracks[tid]
 
