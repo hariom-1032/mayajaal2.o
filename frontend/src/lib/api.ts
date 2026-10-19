@@ -114,6 +114,29 @@ export interface StreamValidationResult {
   candidates?: string[];
 }
 
+async function appendImagePayload(
+  formData: FormData,
+  fileOrBase64: File | Blob | string,
+  fileFieldName: string = "file",
+  base64FieldName: string = "image_base64"
+): Promise<void> {
+  if (typeof fileOrBase64 === "string") {
+    if (fileOrBase64.startsWith("blob:")) {
+      try {
+        const res = await fetch(fileOrBase64);
+        const blob = await res.blob();
+        formData.append(fileFieldName, blob, "face.jpg");
+        return;
+      } catch (err) {
+        console.warn("Failed to fetch blob URL, falling back to base64 payload:", err);
+      }
+    }
+    formData.append(base64FieldName, fileOrBase64);
+  } else {
+    formData.append(fileFieldName, fileOrBase64);
+  }
+}
+
 export const api = {
   /**
    * Health and Provider status
@@ -482,11 +505,7 @@ export const api = {
     if (metadata?.notes) {
       formData.append("notes", metadata.notes);
     }
-    if (typeof fileOrBase64 === "string") {
-      formData.append("image_base64", fileOrBase64);
-    } else {
-      formData.append("file", fileOrBase64);
-    }
+    await appendImagePayload(formData, fileOrBase64, "file", "image_base64");
     return request<RegisterFaceResponse>("/api/faces/register", {
       method: "POST",
       body: formData,
@@ -515,11 +534,7 @@ export const api = {
   async addFaceSample(personId: string, fileOrBase64: File | Blob | string): Promise<RegisterFaceResponse> {
     const formData = new FormData();
     formData.append("person_id", personId);
-    if (typeof fileOrBase64 === "string") {
-      formData.append("image_base64", fileOrBase64);
-    } else {
-      formData.append("file", fileOrBase64);
-    }
+    await appendImagePayload(formData, fileOrBase64, "file", "image_base64");
     return request<RegisterFaceResponse>("/api/faces/add-sample", {
       method: "POST",
       body: formData,
@@ -540,11 +555,7 @@ export const api = {
     const formData = new FormData();
     formData.append("min_match_score", minMatchScore.toString());
     formData.append("min_face_size", minFaceSize.toString());
-    if (typeof fileOrBase64 === "string") {
-      formData.append("image_base64", fileOrBase64);
-    } else {
-      formData.append("file", fileOrBase64);
-    }
+    await appendImagePayload(formData, fileOrBase64, "file", "image_base64");
     return request<FaceScanResponse>("/api/faces/scan", {
       method: "POST",
       body: formData,

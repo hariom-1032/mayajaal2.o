@@ -654,9 +654,16 @@ export default function FacialRecognitionPage() {
       return;
     }
 
-    const payloadImage = enrollPreview || enrollFile;
+    const payloadImage =
+      enrollMode === "upload"
+        ? (enrollFile || enrollPreview)
+        : (enrollPreview || enrollFile);
     if (!payloadImage) {
-      setEnrollError("Please capture or upload a face photo");
+      setEnrollError(
+        enrollMode === "upload"
+          ? "Please select a face image file"
+          : "Please capture a face photo with your camera"
+      );
       return;
     }
 
@@ -2256,7 +2263,14 @@ export default function FacialRecognitionPage() {
             <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200 text-xs font-semibold">
               <button
                 type="button"
-                onClick={() => setEnrollMode("webcam")}
+                onClick={() => {
+                  if (enrollMode !== "webcam") {
+                    setEnrollFile(null);
+                    setEnrollPreview(null);
+                    setEnrollError(null);
+                    setEnrollMode("webcam");
+                  }
+                }}
                 className={`flex-1 py-2 rounded-lg transition cursor-pointer ${
                   enrollMode === "webcam" ? "bg-white text-emerald-800 shadow-xs" : "text-slate-600 hover:text-slate-900"
                 }`}
@@ -2265,7 +2279,15 @@ export default function FacialRecognitionPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setEnrollMode("upload")}
+                onClick={() => {
+                  if (enrollMode !== "upload") {
+                    stopWebcam();
+                    setEnrollFile(null);
+                    setEnrollPreview(null);
+                    setEnrollError(null);
+                    setEnrollMode("upload");
+                  }
+                }}
                 className={`flex-1 py-2 rounded-lg transition cursor-pointer ${
                   enrollMode === "upload" ? "bg-white text-emerald-800 shadow-xs" : "text-slate-600 hover:text-slate-900"
                 }`}
@@ -2481,7 +2503,7 @@ export default function FacialRecognitionPage() {
             {/* Mode 2: File Upload */}
             {enrollMode === "upload" && (
               <div className="flex flex-col gap-3">
-                <label className="flex flex-col items-center justify-center p-8 rounded-xl border-2 border-dashed border-slate-300 hover:border-emerald-600 cursor-pointer bg-slate-50/50 hover:bg-emerald-50/20 transition-all">
+                <label className="flex flex-col items-center justify-center p-8 rounded-xl border-2 border-dashed border-slate-300 hover:border-emerald-600 cursor-pointer bg-slate-50/50 hover:bg-emerald-50/20 transition-all relative">
                   <input
                     type="file"
                     accept="image/*"
@@ -2491,15 +2513,30 @@ export default function FacialRecognitionPage() {
                         const file = e.target.files[0];
                         setEnrollFile(file);
                         setEnrollPreview(URL.createObjectURL(file));
+                        setEnrollError(null);
                       }
                     }}
                   />
                   {enrollPreview ? (
-                    <img
-                      src={enrollPreview}
-                      alt="Upload Preview"
-                      className="max-h-48 rounded-xl object-contain"
-                    />
+                    <div className="flex flex-col items-center gap-2">
+                      <img
+                        src={enrollPreview}
+                        alt="Upload Preview"
+                        className="max-h-48 rounded-xl object-contain border border-slate-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setEnrollFile(null);
+                          setEnrollPreview(null);
+                        }}
+                        className="text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer underline"
+                      >
+                        Remove and select another photo
+                      </button>
+                    </div>
                   ) : (
                     <>
                       <Upload className="w-8 h-8 text-slate-400" />
@@ -2535,7 +2572,7 @@ export default function FacialRecognitionPage() {
               <button
                 type="button"
                 onClick={handleEnrollSubmit}
-                disabled={isEnrolling || !enrollPreview}
+                disabled={isEnrolling || (enrollMode === "upload" ? !enrollFile && !enrollPreview : !enrollPreview)}
                 className="px-5 py-2.5 rounded-xl bg-[#143724] hover:bg-[#102d1d] text-white font-bold text-xs uppercase tracking-wider shadow-xs disabled:opacity-50 transition cursor-pointer"
               >
                 {isEnrolling ? "Verifying & Enrolling..." : "Complete Enrollment"}

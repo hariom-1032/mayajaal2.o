@@ -34,14 +34,21 @@ def decode_image_input(
 ) -> Optional[np.ndarray]:
     """Decode raw image bytes or base64 data into a BGR numpy array."""
     try:
-        if file_bytes:
+        if file_bytes and len(file_bytes) > 0:
             nparr = np.frombuffer(file_bytes, np.uint8)
-            return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            decoded = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if decoded is not None:
+                return decoded
 
         if base64_str:
-            clean_b64 = base64_str
+            clean_b64 = base64_str.strip()
             if "base64," in clean_b64:
-                clean_b64 = clean_b64.split("base64,")[1]
+                clean_b64 = clean_b64.split("base64,")[1].strip()
+            if not clean_b64:
+                return None
+            missing_padding = len(clean_b64) % 4
+            if missing_padding:
+                clean_b64 += "=" * (4 - missing_padding)
             image_data = base64.b64decode(clean_b64)
             nparr = np.frombuffer(image_data, np.uint8)
             return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -125,8 +132,9 @@ async def register_face(
 
     if file:
         content = await file.read()
-        image_bgr = decode_image_input(file_bytes=content)
-    elif image_base64:
+        if content:
+            image_bgr = decode_image_input(file_bytes=content)
+    if image_bgr is None and image_base64:
         image_bgr = decode_image_input(base64_str=image_base64)
 
     if image_bgr is None:
@@ -290,8 +298,9 @@ async def add_face_sample(
 
     if file:
         content = await file.read()
-        image_bgr = decode_image_input(file_bytes=content)
-    elif image_base64:
+        if content:
+            image_bgr = decode_image_input(file_bytes=content)
+    if image_bgr is None and image_base64:
         image_bgr = decode_image_input(base64_str=image_base64)
 
     if image_bgr is None:
@@ -331,8 +340,9 @@ async def scan_image(
 
     if file:
         content = await file.read()
-        image_bgr = decode_image_input(file_bytes=content)
-    elif image_base64:
+        if content:
+            image_bgr = decode_image_input(file_bytes=content)
+    if image_bgr is None and image_base64:
         image_bgr = decode_image_input(base64_str=image_base64)
 
     if image_bgr is None:
