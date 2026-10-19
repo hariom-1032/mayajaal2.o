@@ -94,28 +94,7 @@ export function DetectionCanvas({
       const scaleX = renderWidth / sourceWidth;
       const scaleY = renderHeight / sourceHeight;
 
-      // Enforce physical invariant: deduplicate multiple detections claiming the same known identity in the same frame
-      const claimedIdentities = new Set<string>();
-      const processedDetections = detections.map((det) => {
-        const rawName = (det.suspect_name || det.class_name.replace(/^(face_|suspect_)/i, "")).trim().toLowerCase();
-        const isIdentityTagged = det.class_name.toLowerCase().startsWith("face_") || det.class_name.toLowerCase().startsWith("suspect_");
-        if (isIdentityTagged && rawName && rawName !== "unknown") {
-          if (claimedIdentities.has(rawName)) {
-            // Identity collision in same frame: demote duplicate to Unknown
-            return {
-              ...det,
-              class_name: "face_unknown",
-              suspect_name: "Unknown",
-              is_threat: false,
-              threat_level: undefined,
-            };
-          }
-          claimedIdentities.add(rawName);
-        }
-        return det;
-      });
-
-      processedDetections.forEach((det) => {
+      detections.forEach((det) => {
         const [x1, y1, x2, y2] = det.box;
         const rx1 = offsetX + x1 * scaleX;
         const ry1 = offsetY + y1 * scaleY;
@@ -125,16 +104,13 @@ export function DetectionCanvas({
         const boxH = ry2 - ry1;
 
         const isSuspect = Boolean(det.is_threat || det.class_name.toLowerCase().startsWith("suspect") || det.threat_level);
-        const isUnknownFace = det.class_name.toLowerCase().includes("unknown") || det.suspect_name?.toLowerCase() === "unknown";
-        const isFace = (det.class_name.toLowerCase().startsWith("face_") || det.class_name.toLowerCase().startsWith("person_")) && !isUnknownFace;
+        const isFace = det.class_name.toLowerCase().startsWith("face_") || det.class_name.toLowerCase().startsWith("person_");
 
         let color = CLASS_COLORS[det.class_name.toLowerCase()] || CLASS_COLORS.default;
         if (isSuspect) {
           color = "#dc2626"; // Crimson Alert
         } else if (isFace) {
           color = "#10b981"; // Emerald Known Face
-        } else if (isUnknownFace) {
-          color = "#94a3b8"; // Neutral Gray Unknown Face
         }
 
         // 1. Semi-transparent fill
@@ -191,8 +167,6 @@ export function DetectionCanvas({
         } else if (isFace) {
           const name = (det.suspect_name || det.class_name.replace(/^face_/i, "")).toUpperCase();
           labelText = `👤 ${name} ${confStr}`;
-        } else if (isUnknownFace) {
-          labelText = `👤 UNKNOWN ${confStr}`;
         }
 
         ctx.font = isSuspect ? "bold 11px system-ui, sans-serif" : "bold 11px monospace";
