@@ -618,7 +618,7 @@ export const api = {
     });
   },
 
-  async consolidateUnknownFaces(similarityThreshold: number = 0.38): Promise<{
+  async consolidateUnknownFaces(similarityThreshold: number = 0.18): Promise<{
     success: boolean;
     message: string;
     merged_count: number;

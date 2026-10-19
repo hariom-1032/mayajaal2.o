@@ -169,7 +169,7 @@ def test_unknown_face_lifecycle():
     print("[PASS] GET /api/faces/unknown/stats returned aggregated metrics.")
 
     # 10. Test API POST /api/faces/unknown/consolidate
-    res_cons = client.post("/api/faces/unknown/consolidate?similarity_threshold=0.38")
+    res_cons = client.post("/api/faces/unknown/consolidate?similarity_threshold=0.18")
     assert res_cons.status_code == 200
     assert res_cons.json()["total_remaining"] == 2
     print(f"[PASS] POST /api/faces/unknown/consolidate: {res_cons.json()['message']}")

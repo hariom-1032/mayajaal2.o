@@ -512,7 +512,7 @@ export default function FacialRecognitionPage() {
   const handleConsolidateDuplicates = async () => {
     try {
       setIsConsolidating(true);
-      const res = await api.consolidateUnknownFaces(0.38);
+      const res = await api.consolidateUnknownFaces(0.18);
       if (res.success) {
         alert(res.message);
         await fetchUnknowns();

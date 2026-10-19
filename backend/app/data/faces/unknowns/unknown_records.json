@@ -1,8 +1,8 @@
 [
   {
-    "id": "UNK-D2C3",
-    "timestamp": "2026-10-19 22:53:33",
-    "iso_timestamp": "2026-10-19T22:53:33.210560",
+    "id": "UNK-0812",
+    "timestamp": "2026-10-19 23:54:57",
+    "iso_timestamp": "2026-10-19T23:54:57.705875",
     "camera_id": "cam-saset",
     "camera_name": "SASET Main Corridor",
     "cameras_seen": [
@@ -15,11 +15,11 @@
       250.0,
       220.0
     ],
-    "photo_filename": "unknown_UNK-D2C3_cam-saset_1792430613210.jpg",
-    "photo_url": "/api/faces/unknown/photo/unknown_UNK-D2C3_cam-saset_1792430613210.jpg",
+    "photo_filename": "unknown_UNK-0812_cam-saset_1792434297705.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-0812_cam-saset_1792434297705.jpg",
     "seen_count": 1,
-    "last_seen": "2026-10-19 22:53:33",
-    "_last_seen_sec": 1792430613.2105577,
+    "last_seen": "2026-10-19 23:54:57",
+    "_last_seen_sec": 1792434297.7058725,
     "status": "unreviewed",
     "notes": "",
     "enrolled_name": null

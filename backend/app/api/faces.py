@@ -217,7 +217,7 @@ def delete_unknown_face(unknown_id: str) -> dict:
 
 
 @router.post("/unknown/consolidate")
-def consolidate_unknown_faces(similarity_threshold: float = Query(0.38, ge=0.25, le=0.70)) -> dict:
+def consolidate_unknown_faces(similarity_threshold: float = Query(0.18, ge=0.10, le=0.70)) -> dict:
     """Retroactively merge duplicate unknown records using 512-D biometric face embeddings."""
     res = unknown_face_service.consolidate_duplicates(similarity_threshold=similarity_threshold)
     return {
