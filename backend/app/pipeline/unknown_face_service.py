@@ -20,16 +20,22 @@ logger = logging.getLogger("SIH26187.UnknownFaceService")
 
 class UnknownFaceService:
     """
-    Centralized Unknown Person Detection & Archival Service for MayaJaal.
+    Centralized Unknown Person Detection, Biometric Re-ID & Archival Service for MayaJaal.
 
     When an un-enrolled / unrecognized person is detected on any camera feed:
-      1. Generates a distinct human-readable Unknown ID (e.g., UNK-7E2A).
-      2. Extracts a high-clarity face portrait photograph with aspect-ratio padding.
-      3. Saves the photograph persistently to disk with unique naming.
-      4. Debounces rapid-fire detections per camera track so the database is not flooded.
-      5. Records metadata (ID, real-time timestamp, camera name/ID, detection confidence, bbox).
-      6. Dispatches real-time WebSocket notifications to the admin operational console.
-      7. Allows admins to review, filter, delete, or 1-click enroll the unknown person into the roster.
+      1. Performs 512-D Biometric Re-Identification against all previously observed unknown individuals.
+      2. If matched (cosine similarity >= threshold), updates the existing unknown record:
+         - Increments occurrence counter (`seen_count`).
+         - Updates real-time `last_seen` timestamp.
+         - Records multi-camera trajectory in `cameras_seen`.
+         - Upgrades to higher-clarity face photograph if current frame has better resolution/lighting.
+         - Updates biometric embedding with exponential moving average to account for pose variance.
+      3. If no match is found, archives as a distinct, new Unknown individual:
+         - Generates a human-readable Unknown ID (e.g., UNK-7E2A).
+         - Extracts a high-clarity face portrait photograph with aspect-ratio padding.
+         - Stores normalized 512-D AdaFace biometric embedding in disk-backed cache.
+         - Dispatches real-time WebSocket notification to the admin console.
+      4. Provides 1-click roster enrollment, status tracking, noise filtering, and retroactive consolidation.
     """
 
     def __init__(self) -> None:
@@ -38,6 +44,7 @@ class UnknownFaceService:
         self.unknowns_dir = self.data_dir / "unknowns"
         self.photos_dir = self.unknowns_dir / "photos"
         self.db_file = self.unknowns_dir / "unknown_records.json"
+        self.embeddings_file = self.unknowns_dir / "unknown_embeddings.npz"
 
         # Ensure directories exist
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -45,14 +52,26 @@ class UnknownFaceService:
         self.photos_dir.mkdir(parents=True, exist_ok=True)
 
         self.records: list[dict[str, Any]] = []
+        self.embeddings: dict[str, np.ndarray] = {}
         self.max_records: int = 500
 
-        # In-memory tracking cache for debouncing rapid consecutive frames:
-        # Key: (camera_id, track_id) or (camera_id, spatial_bucket) -> { "unknown_id": str, "last_seen": float, "bbox": list }
+        # Biometric Re-ID Cosine Similarity Thresholds (AdaFace 512-D)
+        # 0.38: standard cross-camera threshold for same identity under arbitrary surveillance horizons
+        # 0.34: relaxed threshold when observed on the same camera or within adjacent horizon window (< 3 mins)
+        self.reid_similarity_threshold: float = 0.38
+        self.reid_recent_threshold: float = 0.34
+
+        # In-memory tracking cache for fallback debouncing
         self._active_debounces: dict[str, dict[str, Any]] = {}
-        self.debounce_cooldown: float = 12.0  # seconds between new distinct records for same physical track
+        self.debounce_cooldown: float = 12.0
 
         self._load_records()
+        self._load_embeddings()
+        if len(self.records) > 1:
+            try:
+                self.consolidate_duplicates()
+            except Exception as c_err:
+                logger.debug("Initial duplicate consolidation skipped: %s", c_err)
 
     def _load_records(self) -> None:
         """Load persisted unknown person records from JSON file."""
@@ -84,10 +103,50 @@ class UnknownFaceService:
                 except Exception:
                     pass
 
+    def _load_embeddings(self) -> None:
+        """Load persisted 512-D biometric embeddings from NPZ disk."""
+        with self.lock:
+            self.embeddings.clear()
+            if self.embeddings_file.exists():
+                try:
+                    loaded = np.load(self.embeddings_file)
+                    for k in loaded.files:
+                        self.embeddings[k] = loaded[k].astype(np.float32)
+                    logger.info("Loaded %d unknown biometric face embeddings.", len(self.embeddings))
+                except Exception as exc:
+                    logger.warning("Failed to load unknown face embeddings: %s", exc)
+
+    def _save_embeddings(self) -> None:
+        """Persist 512-D biometric embeddings atomically to NPZ disk."""
+        if not self.embeddings:
+            if self.embeddings_file.exists():
+                try:
+                    self.embeddings_file.unlink()
+                except Exception:
+                    pass
+            return
+
+        temp_file = self.embeddings_file.with_suffix(".tmp.npz")
+        try:
+            np.savez_compressed(temp_file, **self.embeddings)
+            temp_file.replace(self.embeddings_file)
+        except Exception as exc:
+            logger.error("Failed to persist unknown biometric embeddings: %s", exc)
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+
     def _generate_unknown_id(self) -> str:
         """Generate a clean, memorable Unknown Person ID, e.g., UNK-9E3A."""
-        short_hex = uuid.uuid4().hex[:4].upper()
-        return f"UNK-{short_hex}"
+        existing_ids = {r["id"] for r in self.records}
+        for _ in range(50):
+            short_hex = uuid.uuid4().hex[:4].upper()
+            candidate = f"UNK-{short_hex}"
+            if candidate not in existing_ids:
+                return candidate
+        return f"UNK-{uuid.uuid4().hex[:6].upper()}"
 
     def _extract_face_crop(
         self,
@@ -138,20 +197,38 @@ class UnknownFaceService:
         camera_name: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """
-        Record a detected unknown person.
-        Extracts face photo crop, generates ID, debounces continuous frames,
-        saves to disk, and notifies real-time listeners.
+        Record a detected unknown person with full 512-D Biometric Re-Identification.
+        
+        If the same person was previously seen (on this camera or any other camera feed),
+        updates the existing record instead of creating duplicate UNK-XXXX cards.
         """
         if frame is None or not face:
             return None
 
         # Verify this is indeed an unknown face
-        if face.get("is_known") or (face.get("name") and face.get("name").lower() != "unknown"):
+        if face.get("is_known") or (face.get("name") and face.get("name").lower() not in ("unknown", "")):
             return None
 
         bbox = face.get("bbox") or face.get("box")
         if not bbox or len(bbox) < 4:
             return None
+
+        # --- NOISE GATE ---
+        bw = float(bbox[2] - bbox[0])
+        bh = float(bbox[3] - bbox[1])
+        if bw < 18 or bh < 18:
+            return None
+
+        # Accurate face detector confidence (NOT calibrated match score against suspects)
+        raw_det_conf = face.get("confidence")
+        if raw_det_conf is not None:
+            det_val = float(raw_det_conf)
+            if det_val < 0.30:
+                # Reject poor/noisy detector candidate
+                return None
+            conf_pct = round(det_val if det_val > 1.0 else det_val * 100.0, 1)
+        else:
+            conf_pct = 90.0
 
         cam_id_str = str(camera_id or "cam-unknown").strip()
         cam_name_str = str(camera_name or cam_id_str or "Surveillance Feed").strip()
@@ -161,52 +238,136 @@ class UnknownFaceService:
         timestamp_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         iso_timestamp = now_dt.isoformat()
 
-        track_id = face.get("track_id")
-        det_conf = float(face.get("calibrated_conf") or face.get("confidence", 0.85))
-        if det_conf > 1.0 and det_conf <= 100.0:
-            conf_pct = round(det_conf, 1)
-        else:
-            conf_pct = round(det_conf * 100.0, 1)
+        # Extract face crop
+        crop = self._extract_face_crop(frame, bbox)
+        if crop is None or crop.size == 0:
+            return None
+
+        # --- EXTRACT / RETRIEVE 512-D BIOMETRIC EMBEDDING ---
+        embedding: Optional[np.ndarray] = None
+        face_emb = face.get("embedding")
+        if face_emb is not None:
+            try:
+                emb_arr = np.array(face_emb, dtype=np.float32).flatten()
+                if emb_arr.size == 512:
+                    norm = float(np.linalg.norm(emb_arr))
+                    if norm > 1e-8:
+                        embedding = (emb_arr / norm).astype(np.float32)
+            except Exception:
+                embedding = None
+
+        if embedding is None:
+            try:
+                from app.pipeline.face_service import face_service
+                embedding = face_service.extract_face_crop_embedding(crop)
+            except Exception as emb_err:
+                logger.debug("Crop embedding extraction fallback failed: %s", emb_err)
 
         # ------------------------------------------------------------------ #
-        # DEBOUNCING: Prevent saving 30 photos/sec for same person in view    #
+        # BIOMETRIC RE-IDENTIFICATION & CROSS-CAMERA CLUSTERING              #
         # ------------------------------------------------------------------ #
-        debounce_key = f"{cam_id_str}_track_{track_id}" if track_id else None
+        from app.pipeline.face_service import compute_cosine_similarity
 
-        # If no track_id, use spatial proximity bucket (center coordinates / 100)
-        if not debounce_key:
+        with self.lock:
+            # 1. Biometric Match Check against all stored unknown face embeddings
+            best_match_id: Optional[str] = None
+            best_similarity: float = -1.0
+
+            if embedding is not None and self.embeddings:
+                for uid, stored_emb in self.embeddings.items():
+                    sim = compute_cosine_similarity(embedding, stored_emb)
+                    if sim > best_similarity:
+                        best_similarity = sim
+                        best_match_id = uid
+
+            is_biometric_match = False
+            matched_record: Optional[dict[str, Any]] = None
+
+            if best_match_id is not None:
+                matched_record = next((r for r in self.records if r["id"] == best_match_id), None)
+                if matched_record is not None:
+                    # Adaptive thresholding:
+                    # Same camera or seen within last 3 minutes -> relaxed threshold (0.34)
+                    # Cross-camera distant movement -> standard threshold (0.38)
+                    last_seen_sec = float(matched_record.get("_last_seen_sec", 0.0))
+                    is_same_cam = matched_record.get("camera_id") == cam_id_str
+                    is_recent = (now_sec - last_seen_sec) < 180.0
+
+                    thresh = self.reid_recent_threshold if (is_same_cam or is_recent) else self.reid_similarity_threshold
+                    if best_similarity >= thresh:
+                        is_biometric_match = True
+
+            # If biometric match found: UPDATE EXISTING RECORD WITHOUT CREATING DUPLICATE
+            if is_biometric_match and matched_record is not None:
+                matched_record["seen_count"] = matched_record.get("seen_count", 1) + 1
+                matched_record["last_seen"] = timestamp_str
+                matched_record["camera_id"] = cam_id_str
+                matched_record["camera_name"] = cam_name_str
+                matched_record["_last_seen_sec"] = now_sec
+
+                cams_list = matched_record.setdefault("cameras_seen", [])
+                if cam_name_str not in cams_list:
+                    cams_list.append(cam_name_str)
+
+                matched_record["bbox"] = [round(float(v), 2) for v in bbox]
+
+                # Clarity / Resolution Photo Upgrade:
+                # If current observation has higher confidence or better crop, upgrade saved photograph
+                prev_conf = float(matched_record.get("confidence", 0.0))
+                if conf_pct >= prev_conf:
+                    matched_record["confidence"] = conf_pct
+                    p_file = self.photos_dir / matched_record.get("photo_filename", "")
+                    try:
+                        cv2.imwrite(str(p_file), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                    except Exception:
+                        pass
+
+                # Exponential moving average update of biometric embedding
+                if embedding is not None and best_match_id in self.embeddings:
+                    stored = self.embeddings[best_match_id]
+                    updated = (0.75 * stored) + (0.25 * embedding)
+                    u_norm = np.linalg.norm(updated)
+                    if u_norm > 1e-8:
+                        self.embeddings[best_match_id] = (updated / u_norm).astype(np.float32)
+
+                self._save_records()
+                self._save_embeddings()
+
+                logger.debug(
+                    "🔄 RE-IDENTIFIED UNKNOWN %s on '%s' (Cosine Sim: %.3f, Seen: %d times)",
+                    best_match_id, cam_name_str, best_similarity, matched_record["seen_count"],
+                )
+                return matched_record
+
+            # 2. Fallback Debounce for cases without biometric embedding (e.g. synthetic test circles)
+            track_id = face.get("track_id")
             cx = (bbox[0] + bbox[2]) / 2.0
             cy = (bbox[1] + bbox[3]) / 2.0
             spatial_bucket = f"{int(cx // 80)}_{int(cy // 80)}"
-            debounce_key = f"{cam_id_str}_spatial_{spatial_bucket}"
+            debounce_key = f"{cam_id_str}_track_{track_id}" if track_id else f"{cam_id_str}_spatial_{spatial_bucket}"
 
-        with self.lock:
-            # Clean up stale debounces (> 30s)
+            # Clean up stale debounces
             stale_keys = [k for k, v in self._active_debounces.items() if (now_sec - v["last_seen"]) > 30.0]
             for k in stale_keys:
                 del self._active_debounces[k]
 
             cached = self._active_debounces.get(debounce_key)
             if cached and (now_sec - cached["last_seen"]) < self.debounce_cooldown:
-                # Update existing record's last seen & detection count
                 cached["last_seen"] = now_sec
                 rec_id = cached["unknown_id"]
                 for r in self.records:
                     if r["id"] == rec_id:
                         r["seen_count"] = r.get("seen_count", 1) + 1
                         r["last_seen"] = timestamp_str
-                        # If current detection is higher confidence, update confidence & bbox
-                        if conf_pct > r.get("confidence", 0):
+                        r["_last_seen_sec"] = now_sec
+                        if conf_pct > float(r.get("confidence", 0.0)):
                             r["confidence"] = conf_pct
-                            r["bbox"] = [round(float(v), 2) for v in bbox]
-                        break
+                        return r
                 return cached.get("record")
 
-            # Extract face photograph crop
-            crop = self._extract_face_crop(frame, bbox)
-            if crop is None or crop.size == 0:
-                return None
-
+            # ------------------------------------------------------------------ #
+            # NEW UNKNOWN INDIVIDUAL REGISTRATION                                #
+            # ------------------------------------------------------------------ #
             unknown_id = self._generate_unknown_id()
             ts_compact = int(now_sec * 1000)
             photo_filename = f"unknown_{unknown_id}_{cam_id_str}_{ts_compact}.jpg"
@@ -226,12 +387,14 @@ class UnknownFaceService:
                 "iso_timestamp": iso_timestamp,
                 "camera_id": cam_id_str,
                 "camera_name": cam_name_str,
+                "cameras_seen": [cam_name_str],
                 "confidence": conf_pct,
                 "bbox": [round(float(v), 2) for v in bbox],
                 "photo_filename": photo_filename,
                 "photo_url": photo_url,
                 "seen_count": 1,
                 "last_seen": timestamp_str,
+                "_last_seen_sec": now_sec,
                 "status": "unreviewed",
                 "notes": "",
                 "enrolled_name": None,
@@ -239,8 +402,9 @@ class UnknownFaceService:
 
             self.records.insert(0, record)
             if len(self.records) > self.max_records:
-                # Remove oldest record and optionally its photo
                 old = self.records.pop()
+                old_id = old.get("id")
+                self.embeddings.pop(old_id, None)
                 old_file = self.photos_dir / old.get("photo_filename", "")
                 if old_file.exists():
                     try:
@@ -248,7 +412,11 @@ class UnknownFaceService:
                     except Exception:
                         pass
 
+            if embedding is not None:
+                self.embeddings[unknown_id] = embedding
+
             self._save_records()
+            self._save_embeddings()
 
             self._active_debounces[debounce_key] = {
                 "unknown_id": unknown_id,
@@ -257,8 +425,8 @@ class UnknownFaceService:
             }
 
         logger.info(
-            "👤 NEW UNKNOWN PERSON DETECTED: %s on '%s' (Confidence: %.1f%%) — Photograph saved as %s",
-            unknown_id, cam_name_str, conf_pct, photo_filename,
+            "👤 NEW UNKNOWN PERSON DETECTED: %s on '%s' (Confidence: %.1f%%) — Biometric profile saved.",
+            unknown_id, cam_name_str, conf_pct,
         )
 
         # Broadcast live event to connected admin clients
@@ -270,9 +438,11 @@ class UnknownFaceService:
         """Broadcast live unknown person detection event over WebSocket."""
         try:
             from app.pipeline.alert_service import alert_service
+            # Sanitize internal helper keys before sending over WS
+            clean_rec = {k: v for k, v in record.items() if not k.startswith("_")}
             alert_service.broadcaster.broadcast_sync({
                 "type": "unknown_face_detected",
-                "unknown": record,
+                "unknown": clean_rec,
             })
         except Exception as ws_err:
             logger.debug("Failed to broadcast unknown detection: %s", ws_err)
@@ -290,7 +460,7 @@ class UnknownFaceService:
             filtered = list(self.records)
 
         if camera_id and camera_id.lower() != "all":
-            filtered = [r for r in filtered if r.get("camera_id") == camera_id]
+            filtered = [r for r in filtered if r.get("camera_id") == camera_id or camera_id in r.get("cameras_seen", [])]
 
         if status_filter and status_filter.lower() != "all":
             filtered = [r for r in filtered if r.get("status", "").lower() == status_filter.lower()]
@@ -302,18 +472,22 @@ class UnknownFaceService:
                 if q in r.get("id", "").lower()
                 or q in r.get("camera_name", "").lower()
                 or q in r.get("camera_id", "").lower()
-                or q in r.get("notes", "").lower()
-                or q in r.get("enrolled_name", "").lower()
+                or any(q in c.lower() for c in r.get("cameras_seen", []))
+                or q in str(r.get("notes", "")).lower()
+                or q in str(r.get("enrolled_name", "")).lower()
             ]
 
         total = len(filtered)
         paginated = filtered[offset : offset + limit]
 
+        # Clean internal helper keys before JSON output
+        clean_paginated = [{k: v for k, v in r.items() if not k.startswith("_")} for r in paginated]
+
         return {
             "success": True,
             "total": total,
-            "count": len(paginated),
-            "unknowns": paginated,
+            "count": len(clean_paginated),
+            "unknowns": clean_paginated,
         }
 
     def get_stats(self) -> dict[str, Any]:
@@ -345,7 +519,8 @@ class UnknownFaceService:
         with self.lock:
             for r in self.records:
                 if r["id"] == unknown_id:
-                    return dict(r)
+                    clean = {k: v for k, v in r.items() if not k.startswith("_")}
+                    return clean
         return None
 
     def update_unknown(
@@ -370,10 +545,11 @@ class UnknownFaceService:
                 target["notes"] = notes
 
             self._save_records()
-            return dict(target)
+            clean = {k: v for k, v in target.items() if not k.startswith("_")}
+            return clean
 
     def delete_unknown(self, unknown_id: str) -> bool:
-        """Delete an unknown person record and remove its photograph from disk."""
+        """Delete an unknown person record and remove its photograph and embedding from disk."""
         photo_to_delete = None
         with self.lock:
             idx_to_remove = None
@@ -387,7 +563,9 @@ class UnknownFaceService:
                 return False
 
             self.records.pop(idx_to_remove)
+            self.embeddings.pop(unknown_id, None)
             self._save_records()
+            self._save_embeddings()
 
         if photo_to_delete:
             p_file = self.photos_dir / photo_to_delete
@@ -400,12 +578,14 @@ class UnknownFaceService:
         return True
 
     def clear_all(self) -> int:
-        """Clear all unknown person records and wipe photos directory."""
+        """Clear all unknown person records, wipes embeddings, and deletes photo directory."""
         with self.lock:
             count = len(self.records)
             self.records = []
+            self.embeddings.clear()
             self._active_debounces.clear()
             self._save_records()
+            self._save_embeddings()
 
         # Delete photo files
         for p in self.photos_dir.glob("*.jpg"):
@@ -415,6 +595,119 @@ class UnknownFaceService:
                 pass
 
         return count
+
+    def consolidate_duplicates(self, similarity_threshold: float = 0.38) -> dict[str, Any]:
+        """
+        Retroactively merge duplicate unknown records using biometric face embeddings.
+        Clusters all existing unknown individuals, merges seen_counts, unions cameras_seen,
+        retains the clearest photo, and cleans up duplicate photos/records from disk.
+        """
+        with self.lock:
+            if len(self.records) <= 1:
+                return {"success": True, "merged_count": 0, "total_remaining": len(self.records)}
+
+            from app.pipeline.face_service import compute_cosine_similarity, face_service
+
+            # Ensure all records have an embedding (extract from saved photo if missing)
+            for r in self.records:
+                rid = r["id"]
+                if rid not in self.embeddings:
+                    p_file = self.photos_dir / r.get("photo_filename", "")
+                    if p_file.exists():
+                        img = cv2.imread(str(p_file))
+                        if img is not None:
+                            emb = face_service.extract_face_crop_embedding(img)
+                            if emb is not None:
+                                self.embeddings[rid] = emb
+
+            # Greedy clustering
+            records_by_id = {r["id"]: r for r in self.records}
+            visited: set[str] = set()
+            clusters: list[list[str]] = []
+
+            for r in self.records:
+                rid = r["id"]
+                if rid in visited:
+                    continue
+                visited.add(rid)
+                cluster = [rid]
+                r_emb = self.embeddings.get(rid)
+                if r_emb is not None:
+                    for other in self.records:
+                        oid = other["id"]
+                        if oid in visited:
+                            continue
+                        o_emb = self.embeddings.get(oid)
+                        if o_emb is not None:
+                            sim = compute_cosine_similarity(r_emb, o_emb)
+                            if sim >= similarity_threshold:
+                                visited.add(oid)
+                                cluster.append(oid)
+                clusters.append(cluster)
+
+            merged_count = 0
+            new_records: list[dict[str, Any]] = []
+
+            for cluster in clusters:
+                if len(cluster) == 1:
+                    new_records.append(records_by_id[cluster[0]])
+                    continue
+
+                # Multiple duplicate records in cluster!
+                merged_count += len(cluster) - 1
+                cluster_recs = [records_by_id[cid] for cid in cluster]
+                # Sort: enrolled first, then highest confidence, then seen_count
+                cluster_recs.sort(key=lambda x: (
+                    1 if x.get("status") == "enrolled" else 0,
+                    float(x.get("confidence", 0.0)),
+                    x.get("seen_count", 1)
+                ), reverse=True)
+
+                primary = cluster_recs[0]
+
+                # Merge seen counts and cameras
+                total_seen = sum(r.get("seen_count", 1) for r in cluster_recs)
+                all_cams = set()
+                for r in cluster_recs:
+                    for c in r.get("cameras_seen", [r.get("camera_name") or r.get("camera_id")]):
+                        if c:
+                            all_cams.add(c)
+
+                primary["seen_count"] = total_seen
+                primary["cameras_seen"] = list(all_cams)
+
+                # Merge notes if any
+                combined_notes = [r.get("notes") for r in cluster_recs if r.get("notes")]
+                if combined_notes:
+                    primary["notes"] = "; ".join(set(combined_notes))
+
+                new_records.append(primary)
+
+                # Remove duplicates from disk & memory
+                for sec in cluster_recs[1:]:
+                    sec_id = sec["id"]
+                    self.embeddings.pop(sec_id, None)
+                    sec_photo = sec.get("photo_filename")
+                    if sec_photo and sec_photo != primary.get("photo_filename"):
+                        p_path = self.photos_dir / sec_photo
+                        if p_path.exists():
+                            try:
+                                p_path.unlink()
+                            except Exception:
+                                pass
+
+            self.records = new_records
+            self._save_records()
+            self._save_embeddings()
+
+            logger.info("Consolidated unknown persons: merged %d duplicates, %d unique remaining.",
+                        merged_count, len(self.records))
+
+            return {
+                "success": True,
+                "merged_count": merged_count,
+                "total_remaining": len(self.records),
+            }
 
     def enroll_unknown(
         self,

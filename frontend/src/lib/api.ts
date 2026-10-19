@@ -618,6 +618,22 @@ export const api = {
     });
   },
 
+  async consolidateUnknownFaces(similarityThreshold: number = 0.38): Promise<{
+    success: boolean;
+    message: string;
+    merged_count: number;
+    total_remaining: number;
+  }> {
+    return request<{
+      success: boolean;
+      message: string;
+      merged_count: number;
+      total_remaining: number;
+    }>(`/api/faces/unknown/consolidate?similarity_threshold=${similarityThreshold}`, {
+      method: "POST",
+    });
+  },
+
   async enrollUnknownFace(
     unknownId: string,
     payload: {

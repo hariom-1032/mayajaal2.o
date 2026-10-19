@@ -216,6 +216,18 @@ def delete_unknown_face(unknown_id: str) -> dict:
     return {"success": True, "message": f"Unknown record {unknown_id} deleted."}
 
 
+@router.post("/unknown/consolidate")
+def consolidate_unknown_faces(similarity_threshold: float = Query(0.38, ge=0.25, le=0.70)) -> dict:
+    """Retroactively merge duplicate unknown records using 512-D biometric face embeddings."""
+    res = unknown_face_service.consolidate_duplicates(similarity_threshold=similarity_threshold)
+    return {
+        "success": True,
+        "message": f"Consolidated {res['merged_count']} duplicate records. {res['total_remaining']} unique individuals remain.",
+        "merged_count": res["merged_count"],
+        "total_remaining": res["total_remaining"],
+    }
+
+
 @router.delete("/unknown")
 def clear_all_unknown_faces() -> dict:
     """Wipe all detected unknown records and stored photos."""

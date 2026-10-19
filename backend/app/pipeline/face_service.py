@@ -408,6 +408,40 @@ class FaceService:
             logger.debug("TTA embedding extraction failed: %s", exc)
             return None
 
+    def extract_face_crop_embedding(self, face_bgr: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Extract a normalized 512-D AdaFace embedding directly from a face crop.
+        Used for Unknown Person Re-ID, temporal tracking, and multi-camera face clustering.
+        """
+        if face_bgr is None or face_bgr.size == 0 or self.analyzer is None:
+            return None
+        try:
+            # 1. Try detector + aligner on the crop
+            with self.lock:
+                faces = self.analyzer.analyze(face_bgr)
+            if faces and faces[0].embedding is not None:
+                emb = faces[0].embedding.astype(np.float32).flatten()
+                norm = np.linalg.norm(emb)
+                if norm > 1e-8:
+                    return (emb / norm).astype(np.float32)
+                return emb.astype(np.float32)
+
+            # 2. If crop is tight and detector missed, run recognizer directly on resized crop
+            if self.analyzer.recognizer is not None:
+                rec = self.analyzer.recognizer
+                in_sz = tuple(rec.input_size)
+                resized = cv2.resize(face_bgr, in_sz, interpolation=cv2.INTER_LANCZOS4)
+                enhanced = enhance_aligned_face(resized, is_distant_or_low_res=False)
+                blob = rec.preprocess(enhanced)
+                feat = rec.session.run(rec.output_names, {rec.input_name: blob})[0].ravel().astype(np.float32)
+                norm = np.linalg.norm(feat)
+                if norm > 1e-8:
+                    return (feat / norm).astype(np.float32)
+                return feat
+        except Exception as exc:
+            logger.debug("Failed to extract face crop embedding: %s", exc)
+        return None
+
     def load_database(self) -> None:
         """
         Load enrolled persons into memory (512-D UniFace).
@@ -1119,6 +1153,7 @@ class FaceService:
                         "threat_level": best_threat_level if is_threat else "NONE",
                         "category": best_category if is_known else "Unknown",
                         "is_distant": True,
+                        "embedding": feat_512.flatten().astype(np.float32),
                     })
             except Exception as roi_err:
                 logger.debug("Error processing person RoI for distant face: %s", roi_err)
@@ -1223,6 +1258,7 @@ class FaceService:
                     "threat_level": best_threat_level if is_threat else "NONE",
                     "category": best_category if is_known else "Unknown",
                     "is_distant": True,
+                    "embedding": feat_512.flatten().astype(np.float32),
                 })
 
         return tiled_detections
@@ -1370,6 +1406,7 @@ class FaceService:
                     "threat_level": best_threat_level if is_threat else "NONE",
                     "category": best_category if is_known else "Unknown",
                     "is_distant": is_distant_crop,
+                    "embedding": feat_512.flatten().astype(np.float32),
                 })
 
         # ------------------------------------------------------------------ #

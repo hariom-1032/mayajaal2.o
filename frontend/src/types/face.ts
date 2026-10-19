@@ -70,6 +70,7 @@ export interface UnknownPerson {
   iso_timestamp: string;
   camera_id: string;
   camera_name: string;
+  cameras_seen?: string[];
   confidence: number;
   bbox: [number, number, number, number];
   photo_filename: string;

@@ -69,6 +69,7 @@ export default function FacialRecognitionPage() {
   const [selectedUnknownForEnroll, setSelectedUnknownForEnroll] = useState<UnknownPerson | null>(null);
   const [unknownViewMode, setUnknownViewMode] = useState<"grid" | "table">("grid");
   const [isLoadingUnknowns, setIsLoadingUnknowns] = useState<boolean>(false);
+  const [isConsolidating, setIsConsolidating] = useState<boolean>(false);
 
   // Quick Enroll Unknown Person Form State
   const [quickEnrollName, setQuickEnrollName] = useState<string>("");
@@ -505,6 +506,21 @@ export default function FacialRecognitionPage() {
       api.getUnknownFaceStats().then((res) => setUnknownStats(res)).catch(() => {});
     } catch {
       alert("Failed to delete unknown record.");
+    }
+  };
+
+  const handleConsolidateDuplicates = async () => {
+    try {
+      setIsConsolidating(true);
+      const res = await api.consolidateUnknownFaces(0.38);
+      if (res.success) {
+        alert(res.message);
+        await fetchUnknowns();
+      }
+    } catch {
+      alert("Failed to consolidate duplicate unknown records.");
+    } finally {
+      setIsConsolidating(false);
     }
   };
 
@@ -1609,6 +1625,20 @@ export default function FacialRecognitionPage() {
                 <span>Refresh</span>
               </button>
 
+              {/* Deduplicate / Merge Button */}
+              {unknowns.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleConsolidateDuplicates}
+                  disabled={isConsolidating}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-200 bg-amber-50/70 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                  title="Biometrically cluster and merge duplicate detections"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 text-amber-600 ${isConsolidating ? "animate-spin" : ""}`} />
+                  <span>{isConsolidating ? "Merging..." : "Merge Duplicates"}</span>
+                </button>
+              )}
+
               {/* Clear All */}
               {unknowns.length > 0 && (
                 <button
@@ -1816,17 +1846,30 @@ export default function FacialRecognitionPage() {
                               </span>
                             </div>
 
-                            {/* Camera Location */}
+                            {/* Camera Location & Trajectory */}
                             <div className="flex items-center gap-1.5 text-slate-500 text-[11px] mt-1">
                               <Camera className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               <span className="truncate font-medium" title={u.camera_name || u.camera_id}>
                                 {u.camera_name || u.camera_id}
                               </span>
+                              {u.cameras_seen && u.cameras_seen.length > 1 && (
+                                <span
+                                  className="ml-auto px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-mono text-[9px] font-bold border border-blue-200"
+                                  title={`Observed on feeds: ${u.cameras_seen.join(", ")}`}
+                                >
+                                  {u.cameras_seen.length} Cams
+                                </span>
+                              )}
                             </div>
 
-                            {/* Occurrence */}
+                            {/* Occurrence & Last Seen */}
                             <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1.5 pt-1.5 border-t border-slate-100 font-mono">
                               <span>Seen: {u.seen_count} time{u.seen_count > 1 ? "s" : ""}</span>
+                              {u.last_seen && u.last_seen !== u.timestamp ? (
+                                <span className="text-slate-500 text-[9px]" title={`Last seen at ${u.last_seen}`}>
+                                  Last: {u.last_seen.split(" ")[1]}
+                                </span>
+                              ) : null}
                               {u.enrolled_name && (
                                 <span className="text-emerald-700 font-bold truncate max-w-[120px]">
                                   As: {u.enrolled_name}
@@ -1916,7 +1959,12 @@ export default function FacialRecognitionPage() {
                               {u.timestamp} IST
                             </td>
                             <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {u.camera_name || u.camera_id}
+                              <div>{u.camera_name || u.camera_id}</div>
+                              {u.cameras_seen && u.cameras_seen.length > 1 && (
+                                <div className="text-[10px] text-blue-600 font-mono mt-0.5" title={u.cameras_seen.join(", ")}>
+                                  {u.cameras_seen.length} Cams: {u.cameras_seen.join(" → ")}
+                                </div>
+                              )}
                             </td>
                             <td className="py-3 px-4 font-mono text-slate-700 font-bold">
                               {u.confidence.toFixed(1)}%
@@ -2570,6 +2618,22 @@ export default function FacialRecognitionPage() {
                         {selectedUnknownForInspect.camera_name || selectedUnknownForInspect.camera_id}
                       </span>
                     </div>
+                    {selectedUnknownForInspect.cameras_seen && selectedUnknownForInspect.cameras_seen.length > 1 && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 text-[11px]">Traversed Feeds</span>
+                        <span className="font-semibold text-blue-700 text-[10px] truncate max-w-[160px]" title={selectedUnknownForInspect.cameras_seen.join(", ")}>
+                          {selectedUnknownForInspect.cameras_seen.join(", ")}
+                        </span>
+                      </div>
+                    )}
+                    {selectedUnknownForInspect.last_seen && selectedUnknownForInspect.last_seen !== selectedUnknownForInspect.timestamp && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 text-[11px]">Last Sighting</span>
+                        <span className="font-mono text-slate-700 text-[11px]">
+                          {selectedUnknownForInspect.last_seen} IST
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between items-center">
                       <span className="text-slate-500 text-[11px]">Detection Confidence</span>
                       <span className="font-mono font-bold text-emerald-800">
