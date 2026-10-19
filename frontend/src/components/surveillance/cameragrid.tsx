@@ -25,7 +25,7 @@ export function CameraGrid({ selectedCameraId, onSelectCamera }: CameraGridProps
   });
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4" suppressHydrationWarning>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" suppressHydrationWarning>
       {cameras.map((camera) => {
         const suspectHit = suspectAlertMap.get(camera.id);
 

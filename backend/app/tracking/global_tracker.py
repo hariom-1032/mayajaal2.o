@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 
 from app.pipeline.reid_service import reid_service
+from app.tracking.topology import camera_topology, CameraTopology
+from app.tracking.calibration_service import calibration_service
 
 logger = logging.getLogger("SIH26187.GlobalTracker")
 
@@ -50,6 +52,8 @@ class GlobalTrace:
         suspect_name: Optional[str] = None,
         threat_level: Optional[str] = None,
         category: Optional[str] = None,
+        footprint_ground_m: Optional[tuple[float, float]] = None,
+        footprint_gps: Optional[tuple[float, float]] = None,
     ) -> None:
         self.trace_id: str = trace_id
         self.feature: np.ndarray = feature
@@ -75,6 +79,11 @@ class GlobalTrace:
                 "box": [round(float(v), 2) for v in box],
                 "confidence": round(float(confidence), 3),
                 "reid_score": 1.0,
+                "spatial_score": 1.0,
+                "fused_score": 1.0,
+                "speed_kmh": 0.0,
+                "footprint_ground_m": [round(float(v), 2) for v in footprint_ground_m] if footprint_ground_m else None,
+                "footprint_gps": [round(float(v), 6) for v in footprint_gps] if footprint_gps else None,
             }
         ]
 
@@ -92,6 +101,11 @@ class GlobalTrace:
         confidence: float,
         reid_score: float,
         timestamp: float,
+        speed_kmh: Optional[float] = None,
+        spatial_score: Optional[float] = None,
+        fused_score: Optional[float] = None,
+        footprint_ground_m: Optional[tuple[float, float]] = None,
+        footprint_gps: Optional[tuple[float, float]] = None,
     ) -> None:
         self.waypoints.append(
             {
@@ -102,6 +116,11 @@ class GlobalTrace:
                 "box": [round(float(v), 2) for v in box],
                 "confidence": round(float(confidence), 3),
                 "reid_score": round(float(reid_score), 3),
+                "spatial_score": round(float(spatial_score), 3) if spatial_score is not None else 1.0,
+                "fused_score": round(float(fused_score), 3) if fused_score is not None else round(float(reid_score), 3),
+                "speed_kmh": round(float(speed_kmh), 2) if speed_kmh is not None else None,
+                "footprint_ground_m": [round(float(v), 2) for v in footprint_ground_m] if footprint_ground_m else None,
+                "footprint_gps": [round(float(v), 6) for v in footprint_gps] if footprint_gps else None,
             }
         )
         self.last_camera_id = camera_id
@@ -135,6 +154,8 @@ class GlobalTrace:
         """Convert GlobalTrace into JSON-serializable representation."""
         duration_sec = round(self.last_seen - self.first_seen, 1)
         unique_cameras = list(dict.fromkeys(wp["camera_id"] for wp in self.waypoints))
+        recorded_speeds = [wp["speed_kmh"] for wp in self.waypoints if wp.get("speed_kmh") is not None and wp.get("speed_kmh", 0) > 0]
+        avg_speed = round(float(sum(recorded_speeds) / len(recorded_speeds)), 2) if recorded_speeds else 0.0
 
         return {
             "trace_id": self.trace_id,
@@ -151,6 +172,7 @@ class GlobalTrace:
             "threat_level": self.threat_level,
             "category": self.category,
             "waypoints_count": len(self.waypoints),
+            "average_speed_kmh": avg_speed,
         }
 
 
@@ -158,13 +180,20 @@ class GlobalTraceManager:
     """
     Central Thread-Safe Manager for Cross-Camera Multi-Target Multi-Camera Tracking (MTMCT).
     Bridges local single-camera ByteTrack IDs into unified Global Trace IDs using
-    Deep Appearance Re-ID (OSNet).
+    Deep Appearance Re-ID (OSNet) coupled with Spatio-Temporal & Kinematic Gating.
     """
 
     def __init__(
         self,
         similarity_threshold: float = 0.65,
         retention_ttl_seconds: float = 600.0,
+        max_pedestrian_speed_kmh: float = 25.0,
+        max_vehicle_speed_kmh: float = 100.0,
+        min_transit_time_seconds: float = 0.5,
+        spatial_collocation_threshold_m: float = 15.0,
+        reid_weight: float = 0.70,
+        spatial_weight: float = 0.30,
+        topology: Optional[CameraTopology] = None,
     ) -> None:
         self._traces: dict[str, GlobalTrace] = {}
         # Maps (camera_id, local_track_id) -> global_trace_id
@@ -175,7 +204,49 @@ class GlobalTraceManager:
         self.next_trace_num: int = 1
         self.similarity_threshold: float = similarity_threshold
         self.retention_ttl_seconds: float = retention_ttl_seconds
+        self.max_pedestrian_speed_kmh: float = max_pedestrian_speed_kmh
+        self.max_vehicle_speed_kmh: float = max_vehicle_speed_kmh
+        self.min_transit_time_seconds: float = min_transit_time_seconds
+        self.spatial_collocation_threshold_m: float = spatial_collocation_threshold_m
+
+        # Multi-factor weights: appearance vs spatial topology
+        self.reid_weight: float = reid_weight
+        self.spatial_weight: float = spatial_weight
+        self.topology: CameraTopology = topology or camera_topology
         self.lock = threading.Lock()
+
+        # Cache camera metadata and GPS coordinates (lat, lon)
+        self._camera_coords: dict[str, tuple[float, float]] = {}
+        self._camera_meta: dict[str, dict[str, Any]] = {}
+        self._load_cameras_cache()
+
+    def _load_cameras_cache(self) -> None:
+        """Cache camera GPS locations and metadata from cameras.json."""
+        try:
+            if DATA_FILE.exists():
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    cams = json.load(f)
+                    for c in cams:
+                        cid = str(c.get("id"))
+                        self._camera_meta[cid] = c
+                        lat = c.get("latitude")
+                        lon = c.get("longitude")
+                        if lat is not None and lon is not None:
+                            try:
+                                self._camera_coords[cid] = (float(lat), float(lon))
+                            except (ValueError, TypeError):
+                                pass
+        except Exception as err:
+            logger.debug("Could not load camera coordinates cache: %s", err)
+
+    def register_camera_coordinates(self, camera_id: str, latitude: float, longitude: float) -> None:
+        """Register or update GPS coordinates for a specific camera ID."""
+        with self.lock:
+            self._camera_coords[str(camera_id)] = (float(latitude), float(longitude))
+
+    def get_camera_coordinates(self, camera_id: str) -> Optional[tuple[float, float]]:
+        """Retrieve cached GPS coordinates (lat, lon) for a camera."""
+        return self._camera_coords.get(str(camera_id))
 
     def update_track(
         self,
@@ -188,14 +259,16 @@ class GlobalTraceManager:
         suspect_name: Optional[str] = None,
         threat_level: Optional[str] = None,
         category: Optional[str] = None,
+        timestamp: Optional[float] = None,
+        is_vehicle: bool = False,
     ) -> tuple[str, bool, float]:
         """
-        Assign or update a unified Global Trace ID for a detected person.
+        Assign or update a unified Global Trace ID for a detected person or vehicle.
 
         Returns:
-            tuple of (trace_id, is_cross_camera_match, reid_confidence_score)
+            tuple of (trace_id, is_cross_camera_match, fused_confidence_score)
         """
-        now = time.time()
+        now = float(timestamp) if timestamp is not None else time.time()
         map_key = (camera_id, int(local_track_id))
 
         with self.lock:
@@ -219,7 +292,7 @@ class GlobalTraceManager:
 
                     return trace.trace_id, False, 1.0
 
-            # Case 2: New local track in this camera -> Perform Cross-Camera Re-ID
+            # Case 2: New local track in this camera -> Perform Cross-Camera Multi-Factor Re-ID
             h, w = frame_bgr.shape[:2]
             x1, y1, x2, y2 = [int(v) for v in box]
             x1 = max(0, min(w - 1, x1))
@@ -235,9 +308,20 @@ class GlobalTraceManager:
                 trace_id = f"TRC-TEMP-{int(now) % 10000}"
                 return trace_id, False, 0.0
 
+            # Project 2D bounding box footpoint onto ground plane and geodetic GPS
+            footprint_ground_m, footprint_gps = calibration_service.project_box_footprint(
+                camera_id=camera_id,
+                box=box,
+                frame_resolution=(w, h),
+            )
+
             # Search existing active traces for cross-camera appearance match
             best_match: Optional[GlobalTrace] = None
             best_score: float = -1.0
+            best_reid_score: float = 0.0
+            best_spatial_score: float = 0.0
+            best_speed_kmh: Optional[float] = None
+            best_dt_sec: float = 0.0
 
             for candidate in self._traces.values():
                 # Spatial Exclusivity Filter:
@@ -254,14 +338,71 @@ class GlobalTraceManager:
                 if is_currently_on_same_camera:
                     continue
 
-                # Multi-shot feature comparison
+                # --- Kinematic & Spatio-Temporal Gating ---
+                cand_speed_kmh: Optional[float] = None
+                dist_km: Optional[float] = None
+                dt_sec = max(0.001, now - candidate.last_seen)
+
+                if candidate.last_camera_id != camera_id:
+                    coord_curr = self.get_camera_coordinates(camera_id)
+                    coord_prev = self.get_camera_coordinates(candidate.last_camera_id)
+
+                    if coord_curr is not None and coord_prev is not None:
+                        dist_km = calc_haversine_km(coord_prev[0], coord_prev[1], coord_curr[0], coord_curr[1])
+                        dist_m = dist_km * 1000.0
+
+                        # If cameras are geographically separated beyond collocation threshold
+                        if dist_m > self.spatial_collocation_threshold_m:
+                            # 1. Enforce minimum physical transit time
+                            if dt_sec < self.min_transit_time_seconds:
+                                logger.debug(
+                                    "Kinematic gate rejected %s: dt=%.2fs < min_transit=%.2fs between %s and %s",
+                                    candidate.trace_id, dt_sec, self.min_transit_time_seconds, candidate.last_camera_id, camera_id
+                                )
+                                continue
+
+                            # 2. Enforce maximum physical velocity (teleportation rejection)
+                            cand_speed_kmh = dist_km / (dt_sec / 3600.0)
+                            speed_limit = self.max_vehicle_speed_kmh if is_vehicle else self.max_pedestrian_speed_kmh
+                            if cand_speed_kmh > speed_limit:
+                                logger.info(
+                                    "🚨 TELEPORTATION REJECTED: Candidate %s requires %.1f km/h between %s and %s (dist=%.2f km, dt=%.1f s). Limit is %.1f km/h.",
+                                    candidate.trace_id, cand_speed_kmh, candidate.last_camera_id, camera_id, dist_km, dt_sec, speed_limit
+                                )
+                                continue
+
+                # 1. Multi-shot visual Re-ID appearance score (S_reid)
                 cand_features = [candidate.feature] + candidate.feature_history
                 scores = [reid_service.compute_similarity(feature, f) for f in cand_features]
-                cand_max_score = max(scores) if scores else -1.0
+                cand_reid_score = max(scores) if scores else -1.0
 
-                if cand_max_score > best_score:
-                    best_score = cand_max_score
+                if cand_reid_score < 0.40:
+                    # Clear visual mismatch: skip computing topology affinity
+                    continue
+
+                # 2. Spatio-temporal affinity from Camera Topology (S_spatial)
+                if candidate.last_camera_id != camera_id:
+                    cand_spatial_score = self.topology.compute_spatial_affinity(
+                        from_camera=candidate.last_camera_id,
+                        to_camera=camera_id,
+                        dt_sec=dt_sec,
+                        dist_km=dist_km,
+                    )
+                else:
+                    cand_spatial_score = 1.0
+
+                # 3. Fused Multi-Factor Score:
+                cand_fused_score = (
+                    self.reid_weight * cand_reid_score + self.spatial_weight * cand_spatial_score
+                )
+
+                if cand_fused_score > best_score:
+                    best_score = cand_fused_score
+                    best_reid_score = cand_reid_score
+                    best_spatial_score = cand_spatial_score
                     best_match = candidate
+                    best_speed_kmh = cand_speed_kmh
+                    best_dt_sec = dt_sec if candidate.last_camera_id != camera_id else 0.0
 
             # Decision Boundary:
             if best_match is not None and best_score >= self.similarity_threshold:
@@ -273,20 +414,32 @@ class GlobalTraceManager:
 
                 # Record new camera waypoint transition
                 if trace.last_camera_id != camera_id:
+                    # Online Learning: Record transition in topology graph
+                    if best_dt_sec > 0:
+                        self.topology.record_transition(trace.last_camera_id, camera_id, best_dt_sec)
+
                     trace.add_waypoint(
                         camera_id=camera_id,
                         camera_name=camera_name,
                         box=box,
                         confidence=confidence,
-                        reid_score=best_score,
+                        reid_score=best_reid_score,
                         timestamp=now,
+                        speed_kmh=best_speed_kmh,
+                        spatial_score=best_spatial_score,
+                        fused_score=best_score,
+                        footprint_ground_m=footprint_ground_m,
+                        footprint_gps=footprint_gps,
                     )
                     logger.info(
-                        "🚨 CROSS-CAMERA RE-ID SUCCESS: %s transitioned from %s to %s (Score=%.3f, Local ID #%d)",
+                        "🚨 CROSS-CAMERA RE-ID SUCCESS: %s transitioned from %s to %s (Fused=%.3f, ReID=%.3f, Spatial=%.3f, Speed=%.1f km/h, Local ID #%d)",
                         trace.trace_id,
                         trace.waypoints[-2]["camera_name"] if len(trace.waypoints) > 1 else "Unknown",
                         camera_name,
                         best_score,
+                        best_reid_score,
+                        best_spatial_score,
+                        best_speed_kmh or 0.0,
                         local_track_id,
                     )
 
@@ -316,6 +469,8 @@ class GlobalTraceManager:
                 suspect_name=suspect_name,
                 threat_level=threat_level,
                 category=category,
+                footprint_ground_m=footprint_ground_m,
+                footprint_gps=footprint_gps,
             )
 
             self._traces[trace_id] = new_trace
@@ -355,15 +510,10 @@ class GlobalTraceManager:
             threat_level = trace.threat_level
             category = trace.category
 
-        cameras_map: dict[str, dict[str, Any]] = {}
-        try:
-            if DATA_FILE.exists():
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    cams = json.load(f)
-                    for c in cams:
-                        cameras_map[str(c.get("id"))] = c
-        except Exception as err:
-            logger.debug("Could not read cameras.json for global trace trajectory: %s", err)
+        cameras_map: dict[str, dict[str, Any]] = self._camera_meta
+        if not cameras_map and DATA_FILE.exists():
+            self._load_cameras_cache()
+            cameras_map = self._camera_meta
 
         enriched_waypoints = []
         total_distance = 0.0
@@ -373,8 +523,13 @@ class GlobalTraceManager:
         for idx, wp in enumerate(waypoints_copy):
             cam_id = str(wp.get("camera_id", ""))
             cam_info = cameras_map.get(cam_id, {})
-            lat = float(cam_info.get("latitude") or 32.7240 + (idx * 0.008))
-            lng = float(cam_info.get("longitude") or 74.6710 + (idx * 0.008))
+            footprint_gps = wp.get("footprint_gps")
+            if footprint_gps and len(footprint_gps) == 2 and footprint_gps[0] is not None:
+                lat = float(footprint_gps[0])
+                lng = float(footprint_gps[1])
+            else:
+                lat = float(cam_info.get("latitude") or 32.7240 + (idx * 0.008))
+                lng = float(cam_info.get("longitude") or 74.6710 + (idx * 0.008))
 
             delta_km = 0.0
             elapsed_min = 0.0
@@ -402,7 +557,12 @@ class GlobalTraceManager:
                     "delta_distance_km": round(delta_km, 3),
                     "elapsed_time_minutes": elapsed_min,
                     "reid_score": wp.get("reid_score", 1.0),
+                    "spatial_score": wp.get("spatial_score", 1.0),
+                    "fused_score": wp.get("fused_score", wp.get("reid_score", 1.0)),
                     "confidence": wp.get("confidence", 0.0),
+                    "speed_kmh": wp.get("speed_kmh", 0.0),
+                    "footprint_ground_m": wp.get("footprint_ground_m"),
+                    "footprint_gps": wp.get("footprint_gps"),
                 }
             )
 
@@ -451,6 +611,8 @@ class GlobalTraceManager:
             self._camera_local_map.clear()
             self._local_last_seen.clear()
             self.next_trace_num = 1
+            if not self._camera_coords:
+                self._load_cameras_cache()
             logger.info("GlobalTraceManager reset.")
 
 

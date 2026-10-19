@@ -1,0 +1,56 @@
+{
+  "corridors": [
+    {
+      "from_camera": "bop-jk-01",
+      "to_camera": "bop-jk-02",
+      "distance_m": 46.0,
+      "bidirectional": true,
+      "expected_transit_sec": {
+        "min": 5.0,
+        "optimal": 25.0,
+        "max": 120.0
+      },
+      "transit_count": 0,
+      "confidence": 0.95
+    },
+    {
+      "from_camera": "bop-jk-02",
+      "to_camera": "bop-jk-03",
+      "distance_m": 45.0,
+      "bidirectional": true,
+      "expected_transit_sec": {
+        "min": 5.0,
+        "optimal": 25.0,
+        "max": 120.0
+      },
+      "transit_count": 0,
+      "confidence": 0.95
+    },
+    {
+      "from_camera": "bop-jk-03",
+      "to_camera": "bop-jk-05",
+      "distance_m": 48.0,
+      "bidirectional": true,
+      "expected_transit_sec": {
+        "min": 5.0,
+        "optimal": 30.0,
+        "max": 150.0
+      },
+      "transit_count": 0,
+      "confidence": 0.90
+    },
+    {
+      "from_camera": "bop-jk-03",
+      "to_camera": "bop-jk-04",
+      "distance_m": 140.0,
+      "bidirectional": true,
+      "expected_transit_sec": {
+        "min": 15.0,
+        "optimal": 65.0,
+        "max": 300.0
+      },
+      "transit_count": 0,
+      "confidence": 0.85
+    }
+  ]
+}

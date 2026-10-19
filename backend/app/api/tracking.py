@@ -19,9 +19,10 @@ DELETE /api/tracking/rtsp/{camera_id}
 from __future__ import annotations
 
 import logging
-import tempfile
-import uuid
 from pathlib import Path
+import tempfile
+from typing import Any, Optional
+import uuid
 
 import cv2
 import numpy as np
@@ -53,6 +54,8 @@ from app.tracking.annotator import draw_tracked_boxes, convert_video_to_h264
 from app.pipeline.face_service import face_service
 from app.pipeline.alert_service import alert_service, SNAPSHOTS_DIR
 from app.tracking.global_tracker import global_trace_manager
+from app.tracking.topology import camera_topology
+from app.tracking.calibration_service import calibration_service
 
 
 logger = logging.getLogger(__name__)
@@ -899,4 +902,163 @@ async def reset_global_traces():
     """Clear and reset all global cross-camera trace records."""
     global_trace_manager.reset()
     return {"status": "success", "message": "All global traces have been reset."}
+
+
+# ---------------------------------------------------------------------------
+# Camera Topology & Corridor Adjacency Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/topology")
+async def get_camera_topology():
+    """Retrieve full camera adjacency graph, corridors, and transition statistics."""
+    return {
+        "status": "success",
+        "topology": camera_topology.to_dict(),
+    }
+
+
+@router.post("/topology/corridor")
+async def register_camera_corridor(
+    from_camera: str = Form(...),
+    to_camera: str = Form(...),
+    min_transit_sec: float = Form(5.0),
+    optimal_transit_sec: float = Form(25.0),
+    max_transit_sec: float = Form(120.0),
+    distance_m: float = Form(50.0),
+    bidirectional: bool = Form(True),
+):
+    """Register or update a corridor between two cameras with expected transit times."""
+    camera_topology.register_corridor(
+        from_camera=from_camera,
+        to_camera=to_camera,
+        min_sec=min_transit_sec,
+        optimal_sec=optimal_transit_sec,
+        max_sec=max_transit_sec,
+        distance_m=distance_m,
+        bidirectional=bidirectional,
+    )
+    return {
+        "status": "success",
+        "message": f"Corridor registered between {from_camera} and {to_camera}.",
+        "corridor": camera_topology.get_corridor(from_camera, to_camera),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Camera Calibration & 2.5D Ground Homography Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/calibrations")
+async def list_camera_calibrations():
+    """List all registered camera calibrations."""
+    all_calibs = calibration_service.list_all()
+    return {
+        "status": "success",
+        "total": len(all_calibs),
+        "calibrations": all_calibs,
+    }
+
+
+@router.get("/calibrations/{camera_id}")
+async def get_camera_calibration(camera_id: str):
+    """Retrieve calibration matrix and parameters for a specific camera."""
+    calib = calibration_service.get_calibration(camera_id)
+    if not calib:
+        raise HTTPException(status_code=404, detail=f"No calibration found for camera '{camera_id}'.")
+    return {
+        "status": "success",
+        "calibration": calib.to_dict(),
+    }
+
+
+@router.post("/calibrations/4point")
+async def register_4point_calibration(
+    camera_id: str = Form(...),
+    image_points_json: str = Form(..., description="JSON array of 4 [u, v] points"),
+    ground_points_json: str = Form(..., description="JSON array of 4 [X_m, Y_m] ground points"),
+    origin_lat: Optional[float] = Form(None),
+    origin_lon: Optional[float] = Form(None),
+    camera_height_m: float = Form(6.0),
+    pitch_degrees: float = Form(35.0),
+    hfov_degrees: float = Form(75.0),
+):
+    """Register manual 4-point ground homography calibration for a camera."""
+    import json as json_lib
+    try:
+        img_pts = json_lib.loads(image_points_json)
+        gnd_pts = json_lib.loads(ground_points_json)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format for points: {exc}")
+
+    origin_gps = (origin_lat, origin_lon) if origin_lat is not None and origin_lon is not None else None
+    try:
+        calib = calibration_service.register_4point_calibration(
+            camera_id=camera_id,
+            image_points=img_pts,
+            ground_points_meters=gnd_pts,
+            world_origin_gps=origin_gps,
+            camera_height_m=camera_height_m,
+            pitch_degrees=pitch_degrees,
+            hfov_degrees=hfov_degrees,
+        )
+        return {
+            "status": "success",
+            "message": f"4-point calibration registered for {camera_id}.",
+            "calibration": calib.to_dict(),
+        }
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/calibrations/estimate")
+async def estimate_pinhole_calibration(
+    camera_id: str = Form(...),
+    camera_height_m: float = Form(6.0),
+    pitch_degrees: float = Form(35.0),
+    hfov_degrees: float = Form(75.0),
+    image_width: int = Form(1920),
+    image_height: int = Form(1080),
+    origin_lat: Optional[float] = Form(None),
+    origin_lon: Optional[float] = Form(None),
+):
+    """Synthesize homography calibration from mounting height, pitch angle, and FOV."""
+    origin_gps = (origin_lat, origin_lon) if origin_lat is not None and origin_lon is not None else None
+    calib = calibration_service.estimate_pinhole_calibration(
+        camera_id=camera_id,
+        camera_height_m=camera_height_m,
+        pitch_degrees=pitch_degrees,
+        hfov_degrees=hfov_degrees,
+        image_width=image_width,
+        image_height=image_height,
+        world_origin_gps=origin_gps,
+    )
+    return {
+        "status": "success",
+        "message": f"Analytical calibration synthesized for {camera_id}.",
+        "calibration": calib.to_dict(),
+    }
+
+
+@router.post("/calibrations/project")
+async def project_bounding_box(
+    camera_id: str = Form(...),
+    box_json: str = Form(..., description="[x1, y1, x2, y2] bounding box"),
+    img_w: Optional[int] = Form(None),
+    img_h: Optional[int] = Form(None),
+):
+    """Project bottom-center footpoint of bounding box to ground plane meters and GPS."""
+    import json as json_lib
+    try:
+        box = json_lib.loads(box_json)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid box JSON: {exc}")
+
+    res = (img_w, img_h) if img_w and img_h else None
+    ground_m, gps = calibration_service.project_box_footprint(camera_id, box, frame_resolution=res)
+    return {
+        "status": "success",
+        "camera_id": camera_id,
+        "ground_meters": list(ground_m) if ground_m else None,
+        "gps": list(gps) if gps else None,
+    }
 
