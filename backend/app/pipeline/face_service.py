@@ -888,7 +888,7 @@ class FaceService:
 
         # Quality-adaptive and distance-adaptive thresholding
         # Distant surveillance mode: allow conservative relaxation (down to 0.30 min)
-        # to ensure small faces can match, but NEVER allow dropping into background stranger noise (<0.30).
+        # to ensure small faces can match reliably without dropping, but NEVER allow dropping into stranger noise (<0.30).
         if is_distant:
             effective_thresh = max(0.30, min_match_score * 0.90)
         elif 0 < face_size < 80:
@@ -896,9 +896,8 @@ class FaceService:
         else:
             effective_thresh = min_match_score
 
-        # Quality-gating: degraded quality (<0.35) loses discriminative facial features.
-        # Enforce standard threshold floor rather than relaxing further, preventing false collisions.
-        if probe_quality < 0.35:
+        # Quality-gating: for standard faces, severely degraded quality (<0.25) enforces standard threshold
+        if probe_quality < 0.25 and not is_distant:
             effective_thresh = max(effective_thresh, min_match_score)
 
         if not known_list:
@@ -1419,6 +1418,11 @@ class FaceService:
         matched_track_ids = set()
         final_results = []
 
+        # Coasting window: once an identity is confirmed, maintain it for up to 2.2 seconds
+        # (or 12 consecutive calls) across brief occlusions, head turns, or lighting dips
+        COASTING_DURATION_SEC = 2.2
+        MAX_CONSECUTIVE_UNKNOWNS = 12
+
         for det in current_detections:
             det_box = det["bbox"]
             best_match_val = 0.0
@@ -1430,6 +1434,9 @@ class FaceService:
             det_h = max(1.0, det_box[3] - det_box[1])
             det_diag = max(20.0, np.sqrt(det_w * det_w + det_h * det_h))
 
+            # Adaptive search radius: accommodates inference frame-skips and walking motion
+            max_dist = max(90.0, det_diag * 2.8)
+
             for tid, track in self.tracks.items():
                 if tid in matched_track_ids:
                     continue
@@ -1440,9 +1447,9 @@ class FaceService:
                 t_cy = (t_box[1] + t_box[3]) / 2.0
                 center_dist = np.sqrt((det_cx - t_cx) ** 2 + (det_cy - t_cy) ** 2)
 
-                is_proximate = center_dist <= (det_diag * 1.5)
-                if iou >= 0.15 or is_proximate:
-                    score = iou if iou > 0.0 else max(0.01, 1.0 - (center_dist / (det_diag * 2.0)))
+                is_proximate = center_dist <= max_dist
+                if iou >= 0.10 or is_proximate:
+                    score = iou if iou > 0.0 else max(0.01, 1.0 - (center_dist / (max_dist * 1.5)))
                     if score > best_match_val:
                         best_match_val = score
                         best_tid = tid
@@ -1453,68 +1460,64 @@ class FaceService:
                 track["bbox"] = det_box
                 track["last_seen"] = now
 
-                track["history"].append({
-                    "name": det["name"],
-                    "is_known": det["is_known"],
-                    "score": det["match_score"],
-                    "calibrated": det["calibrated_conf"],
-                })
-                if len(track["history"]) > 6:
-                    track["history"].pop(0)
+                # Exponential moving average score smoothing
+                prev_score = track.get("smoothed_score", det["match_score"])
+                smoothed_score = 0.60 * det["match_score"] + 0.40 * prev_score
+                track["smoothed_score"] = smoothed_score
 
-                known_votes = [h for h in track["history"] if h["is_known"]]
-                total_history = len(track["history"])
-                # Require quorum: either current detection is an authentic match (det["is_known"] == True)
-                # OR the track has demonstrated sustained identity consistency (>=2 known votes and >=40% ratio)
-                has_quorum = (
-                    det.get("is_known")
-                    or (len(known_votes) >= 2 and (len(known_votes) / max(1, total_history)) >= 0.40)
-                )
+                confirmed_name = track.get("confirmed_name")
+                last_conf_time = track.get("last_confirmed_time", 0.0)
+                consec_unk = track.get("consecutive_unknown_count", 0)
 
-                if has_quorum and (known_votes or det.get("is_known")):
-                    candidate_votes = list(known_votes)
-                    if det.get("is_known") and not any(h["name"] == det["name"] for h in candidate_votes):
-                        candidate_votes.append({
-                            "name": det["name"],
-                            "is_known": True,
-                            "score": det["match_score"],
-                            "calibrated": det["calibrated_conf"],
-                        })
+                if det.get("is_known"):
+                    # Direct biometric match: lock in / refresh confirmation
+                    curr_name = det["name"]
+                    track["confirmed_name"] = curr_name
+                    track["last_confirmed_time"] = now
+                    track["confirmed_score"] = max(det["match_score"], smoothed_score)
+                    track["confirmed_calibrated"] = det["calibrated_conf"]
+                    track["consecutive_unknown_count"] = 0
+                else:
+                    # Momentary sub-threshold dip (head turned, motion, shadows)
+                    consec_unk += 1
+                    track["consecutive_unknown_count"] = consec_unk
+                    time_since_match = now - last_conf_time
 
-                    names = [h["name"] for h in candidate_votes]
-                    stabilized_name = max(set(names), key=names.count)
-                    vote_count = names.count(stabilized_name)
+                    # Coasting / Hysteresis: hold confirmed identity during brief gaps
+                    if (
+                        confirmed_name is not None
+                        and time_since_match <= COASTING_DURATION_SEC
+                        and consec_unk <= MAX_CONSECUTIVE_UNKNOWNS
+                    ):
+                        decay_factor = max(0.85, 1.0 - (time_since_match / COASTING_DURATION_SEC) * 0.15)
+                        coasting_conf = track.get("confirmed_calibrated", 65.0) * decay_factor
 
-                    # Only assign identity if there are at least 2 consistent votes or strong current match
-                    if vote_count >= 2 or (det.get("is_known") and det.get("name") == stabilized_name):
-                        matching_votes = [h for h in candidate_votes if h["name"] == stabilized_name]
-                        avg_score = max(h["score"] for h in matching_votes)
-                        avg_calibrated = max(h["calibrated"] for h in matching_votes)
-
-                        known_match = next((p for p in self.known_persons if p["name"].lower() == stabilized_name.lower()), None)
+                        known_match = next((p for p in self.known_persons if p["name"].lower() == confirmed_name.lower()), None)
                         is_suspect_val = known_match.get("is_suspect", False) if known_match else False
                         threat_lvl_val = known_match.get("threat_level", "HIGH" if is_suspect_val else "LOW") if known_match else "NONE"
                         cat_val = known_match.get("category", "Wanted / BOLO" if is_suspect_val else "Authorized Personnel") if known_match else "Unknown"
 
-                        det["name"] = stabilized_name
+                        det["name"] = confirmed_name
                         det["is_known"] = True
                         det["is_threat"] = is_suspect_val
                         det["threat_level"] = threat_lvl_val if is_suspect_val else "NONE"
                         det["category"] = cat_val
-                        det["match_score"] = round(avg_score, 4)
-                        det["calibrated_conf"] = round(avg_calibrated, 1)
-                        det["class_name"] = f"🚨 SUSPECT: {stabilized_name}" if is_suspect_val else f"Face: {stabilized_name}"
+                        det["match_score"] = round(smoothed_score, 4)
+                        det["calibrated_conf"] = round(max(50.0, coasting_conf), 1)
+                        det["class_name"] = f"🚨 SUSPECT: {confirmed_name}" if is_suspect_val else f"Face: {confirmed_name}"
+                    else:
+                        # Grace period expired or never confirmed: mark as Unknown
+                        track["confirmed_name"] = None
             else:
                 tid = self.next_track_id
                 self.next_track_id += 1
                 self.tracks[tid] = {
                     "bbox": det_box,
-                    "history": [{
-                        "name": det["name"],
-                        "is_known": det["is_known"],
-                        "score": det["match_score"],
-                        "calibrated": det["calibrated_conf"],
-                    }],
+                    "confirmed_name": det["name"] if det.get("is_known") else None,
+                    "last_confirmed_time": now if det.get("is_known") else 0.0,
+                    "smoothed_score": det["match_score"],
+                    "confirmed_calibrated": det["calibrated_conf"],
+                    "consecutive_unknown_count": 0 if det.get("is_known") else 1,
                     "last_seen": now,
                 }
 
