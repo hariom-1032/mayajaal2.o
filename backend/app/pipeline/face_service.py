@@ -887,18 +887,19 @@ class FaceService:
         best_category = "Unknown"
 
         # Quality-adaptive and distance-adaptive thresholding
+        # Distant surveillance mode: allow conservative relaxation (down to 0.30 min)
+        # to ensure small faces can match, but NEVER allow dropping into background stranger noise (<0.30).
         if is_distant:
-            effective_thresh = min_match_score * 0.72
+            effective_thresh = max(0.30, min_match_score * 0.90)
         elif 0 < face_size < 80:
-            # Small-ish but not full distant mode — moderate relaxation
-            effective_thresh = min_match_score * 0.85
+            effective_thresh = max(0.30, min_match_score * 0.95)
         else:
             effective_thresh = min_match_score
 
-        # Adapt slightly based on probe quality: if degraded quality (<0.40), adapt threshold down
-        if probe_quality < 0.40 and effective_thresh > 0.25:
-            quality_factor = 0.90 + 0.10 * max(0.0, probe_quality / 0.40)
-            effective_thresh = max(0.24, effective_thresh * quality_factor)
+        # Quality-gating: degraded quality (<0.35) loses discriminative facial features.
+        # Enforce standard threshold floor rather than relaxing further, preventing false collisions.
+        if probe_quality < 0.35:
+            effective_thresh = max(effective_thresh, min_match_score)
 
         if not known_list:
             return best_name, best_score, is_known, best_threat_level, best_category, False
@@ -942,10 +943,9 @@ class FaceService:
         best_person, best_score = scored_candidates[0]
         second_best_score = scored_candidates[1][1] if len(scored_candidates) > 1 else -1.0
 
-        # Margin check: only enforce for distant mode when gallery has >= 3 persons.
-        # With few enrolled persons the margin guard rejects valid matches unnecessarily.
+        # Margin check: enforce for distant mode when gallery has >= 2 persons.
         margin_ok = True
-        if is_distant and len(scored_candidates) >= 3:
+        if is_distant and len(scored_candidates) >= 2:
             margin_ok = (best_score - second_best_score) >= 0.025
 
         if best_score >= effective_thresh and margin_ok:
@@ -1068,7 +1068,7 @@ class FaceService:
                         )
 
                     calibrated_conf = calibrate_arcface_confidence(
-                        max(0.0, best_score), threshold=(min_match_score * 0.72)
+                        max(0.0, best_score), threshold=min_match_score
                     )
                     if is_ambiguous:
                         calibrated_conf = min(calibrated_conf, 65.0)
@@ -1180,7 +1180,7 @@ class FaceService:
                     )
 
                 calibrated_conf = calibrate_arcface_confidence(
-                    max(0.0, best_score), threshold=(min_match_score * 0.72)
+                    max(0.0, best_score), threshold=min_match_score
                 )
                 best_is_suspect = is_known and bool(
                     next((p.get("is_suspect", False) for p in known_list if p["name"] == best_name), False)
@@ -1318,9 +1318,8 @@ class FaceService:
                         probe_quality=probe_quality,
                     )
 
-                effective_th = min_match_score * 0.72 if is_distant_crop else min_match_score
                 calibrated_conf = calibrate_arcface_confidence(
-                    max(0.0, best_score), threshold=effective_th
+                    max(0.0, best_score), threshold=min_match_score
                 )
                 if is_ambiguous:
                     calibrated_conf = min(calibrated_conf, 65.0)
@@ -1464,7 +1463,15 @@ class FaceService:
                     track["history"].pop(0)
 
                 known_votes = [h for h in track["history"] if h["is_known"]]
-                if known_votes or det.get("is_known"):
+                total_history = len(track["history"])
+                # Require quorum: either current detection is an authentic match (det["is_known"] == True)
+                # OR the track has demonstrated sustained identity consistency (>=2 known votes and >=40% ratio)
+                has_quorum = (
+                    det.get("is_known")
+                    or (len(known_votes) >= 2 and (len(known_votes) / max(1, total_history)) >= 0.40)
+                )
+
+                if has_quorum and (known_votes or det.get("is_known")):
                     candidate_votes = list(known_votes)
                     if det.get("is_known") and not any(h["name"] == det["name"] for h in candidate_votes):
                         candidate_votes.append({
@@ -1476,22 +1483,27 @@ class FaceService:
 
                     names = [h["name"] for h in candidate_votes]
                     stabilized_name = max(set(names), key=names.count)
-                    avg_score = max(h["score"] for h in candidate_votes)
-                    avg_calibrated = max(h["calibrated"] for h in candidate_votes)
+                    vote_count = names.count(stabilized_name)
 
-                    known_match = next((p for p in self.known_persons if p["name"].lower() == stabilized_name.lower()), None)
-                    is_suspect_val = known_match.get("is_suspect", False) if known_match else False
-                    threat_lvl_val = known_match.get("threat_level", "HIGH" if is_suspect_val else "LOW") if known_match else "NONE"
-                    cat_val = known_match.get("category", "Wanted / BOLO" if is_suspect_val else "Authorized Personnel") if known_match else "Unknown"
+                    # Only assign identity if there are at least 2 consistent votes or strong current match
+                    if vote_count >= 2 or (det.get("is_known") and det.get("name") == stabilized_name):
+                        matching_votes = [h for h in candidate_votes if h["name"] == stabilized_name]
+                        avg_score = max(h["score"] for h in matching_votes)
+                        avg_calibrated = max(h["calibrated"] for h in matching_votes)
 
-                    det["name"] = stabilized_name
-                    det["is_known"] = True
-                    det["is_threat"] = is_suspect_val
-                    det["threat_level"] = threat_lvl_val if is_suspect_val else "NONE"
-                    det["category"] = cat_val
-                    det["match_score"] = round(avg_score, 4)
-                    det["calibrated_conf"] = round(avg_calibrated, 1)
-                    det["class_name"] = f"🚨 SUSPECT: {stabilized_name}" if is_suspect_val else f"Face: {stabilized_name}"
+                        known_match = next((p for p in self.known_persons if p["name"].lower() == stabilized_name.lower()), None)
+                        is_suspect_val = known_match.get("is_suspect", False) if known_match else False
+                        threat_lvl_val = known_match.get("threat_level", "HIGH" if is_suspect_val else "LOW") if known_match else "NONE"
+                        cat_val = known_match.get("category", "Wanted / BOLO" if is_suspect_val else "Authorized Personnel") if known_match else "Unknown"
+
+                        det["name"] = stabilized_name
+                        det["is_known"] = True
+                        det["is_threat"] = is_suspect_val
+                        det["threat_level"] = threat_lvl_val if is_suspect_val else "NONE"
+                        det["category"] = cat_val
+                        det["match_score"] = round(avg_score, 4)
+                        det["calibrated_conf"] = round(avg_calibrated, 1)
+                        det["class_name"] = f"🚨 SUSPECT: {stabilized_name}" if is_suspect_val else f"Face: {stabilized_name}"
             else:
                 tid = self.next_track_id
                 self.next_track_id += 1
@@ -1507,6 +1519,32 @@ class FaceService:
                 }
 
             final_results.append(det)
+
+        # Exclusive 1-to-1 Identity Resolution on output:
+        # A single person cannot occupy multiple locations in the same frame.
+        # If multiple tracks in the same frame claim the same identity,
+        # award it to the track with highest match score / calibrated confidence,
+        # and demote the duplicate track(s) to "Unknown".
+        claimed_smoothed = set()
+        for d in sorted(
+            final_results,
+            key=lambda x: (float(x.get("match_score", 0.0)), float(x.get("calibrated_conf", 0.0))),
+            reverse=True,
+        ):
+            if d.get("is_known"):
+                d_name = d.get("name", "Unknown")
+                if d_name != "Unknown" and d_name not in claimed_smoothed:
+                    claimed_smoothed.add(d_name)
+                else:
+                    d["is_known"] = False
+                    d["is_threat"] = False
+                    d["threat_level"] = "NONE"
+                    d["name"] = "Unknown"
+                    d["class_name"] = "Face: Unknown"
+                    d["calibrated_conf"] = calibrate_arcface_confidence(
+                        min(float(d.get("match_score", 0.0)), min_match_score * 0.85),
+                        threshold=min_match_score,
+                    )
 
         return final_results
 

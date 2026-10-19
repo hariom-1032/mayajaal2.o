@@ -69,6 +69,51 @@ def test_deduplicate_face_detections():
     print("[PASS] deduplicate_face_detections successfully removed overlapping candidate.")
 
 
+def test_exclusive_one_to_one_identity_resolution():
+    """Verify two people in the same frame can never both be assigned the same identity."""
+    # Reset tracks to a clean state
+    face_service.tracks.clear()
+    face_service.next_track_id = 1
+
+    # Simulate two people walking side-by-side both weakly matching "hariom"
+    det1 = {
+        "bbox": [100.0, 100.0, 140.0, 150.0],
+        "confidence": 0.85,
+        "match_score": 0.63,
+        "calibrated_conf": 63.0,
+        "name": "hariom",
+        "is_known": True,
+        "is_threat": False,
+        "threat_level": "LOW",
+        "category": "Authorized Personnel",
+        "class_name": "Face: hariom",
+    }
+    det2 = {
+        "bbox": [250.0, 100.0, 290.0, 150.0],
+        "confidence": 0.80,
+        "match_score": 0.54,
+        "calibrated_conf": 54.0,
+        "name": "hariom",
+        "is_known": True,
+        "is_threat": False,
+        "threat_level": "LOW",
+        "category": "Authorized Personnel",
+        "class_name": "Face: hariom",
+    }
+
+    results = face_service._apply_temporal_smoothing([det1, det2], now=100.0, min_match_score=0.32)
+
+    # Invariant: exactly one detection can have name "hariom"
+    hariom_matches = [d for d in results if d["name"] == "hariom" and d["is_known"]]
+    unknown_matches = [d for d in results if d["name"] == "Unknown"]
+
+    assert len(hariom_matches) == 1, f"Expected 1 'hariom', got {len(hariom_matches)}"
+    assert len(unknown_matches) == 1, f"Expected 1 'Unknown', got {len(unknown_matches)}"
+    # Higher match score (0.63) must win the identity
+    assert hariom_matches[0]["match_score"] == 0.63
+    print("[PASS] 1-to-1 identity conflict resolution successfully prevented duplicate 'hariom' assignment.")
+
+
 def test_person_guided_roi_and_distant_mode():
     """Verify person-guided RoI detection pipeline on synthetic surveillance frame."""
     # Create 1080p synthetic surveillance scene
@@ -115,6 +160,7 @@ if __name__ == "__main__":
     print("--- Running Distant Facial Recognition Test Suite ---")
     test_enhance_aligned_face_distant()
     test_deduplicate_face_detections()
+    test_exclusive_one_to_one_identity_resolution()
     test_person_guided_roi_and_distant_mode()
     test_faces_scan_distant_endpoint()
     print("ALL DISTANT FACIAL RECOGNITION TESTS PASSED!")
