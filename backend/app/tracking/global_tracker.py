@@ -302,6 +302,8 @@ class GlobalTraceManager:
         with self.lock:
             self._camera_coords[str(camera_id)] = (float(latitude), float(longitude))
 
+    set_camera_coordinates = register_camera_coordinates
+
     def get_camera_coordinates(self, camera_id: str) -> Optional[tuple[float, float]]:
         """Retrieve cached GPS coordinates (lat, lon) for a camera."""
         return self._camera_coords.get(str(camera_id))

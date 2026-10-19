@@ -722,6 +722,20 @@ def stream_generator(
                             enable_distant_mode=True,
                             person_boxes=person_boxes if person_boxes else None,
                         )
+                        if cached_faces:
+                            try:
+                                from app.pipeline.unknown_face_service import unknown_face_service
+                                for fc in cached_faces:
+                                    if not fc.get("is_known"):
+                                        unknown_face_service.record_unknown(
+                                            frame=frame,
+                                            face=fc,
+                                            camera_id=effective_cam_id,
+                                            camera_name=effective_cam_name,
+                                        )
+                            except Exception as unk_err:
+                                logger.debug("Live stream unknown record exception: %s", unk_err)
+
                         if cached_faces and cached_detections:
                             try:
                                 from app.tracking.global_tracker import match_face_to_person_track, global_trace_manager

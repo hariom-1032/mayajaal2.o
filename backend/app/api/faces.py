@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.pipeline.face_service import face_service
+from app.pipeline.unknown_face_service import unknown_face_service
 
 logger = logging.getLogger("SIH26187.FaceAPI")
 
@@ -143,6 +144,109 @@ async def register_face(
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to register face"))
 
     return result
+
+
+class UnknownMetadataUpdate(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/unknown")
+def list_unknown_faces(
+    camera_id: Optional[str] = Query(None, description="Filter by camera ID"),
+    search: Optional[str] = Query(None, description="Search by ID, camera, or notes"),
+    status: Optional[str] = Query(None, description="Filter by status (unreviewed, flagged, enrolled)"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """Retrieve all logged unknown individuals detected across camera feeds."""
+    return unknown_face_service.list_unknowns(
+        camera_id=camera_id,
+        search=search,
+        status_filter=status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/unknown/stats")
+def get_unknown_stats() -> dict:
+    """Get aggregated metrics on detected unknown persons."""
+    return unknown_face_service.get_stats()
+
+
+@router.get("/unknown/{unknown_id}")
+def get_unknown_face(unknown_id: str) -> dict:
+    """Retrieve details for a specific unknown person detection."""
+    rec = unknown_face_service.get_unknown(unknown_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Unknown record not found")
+    return {"success": True, "unknown": rec}
+
+
+@router.get("/unknown/photo/{filename}")
+def get_unknown_photo(filename: str) -> Response:
+    """Serve cropped face photograph for an unknown individual."""
+    safe_name = Path(filename).name
+    photo_file = unknown_face_service.photos_dir / safe_name
+    if not photo_file.exists():
+        raise HTTPException(status_code=404, detail="Photograph not found")
+    return FileResponse(photo_file, media_type="image/jpeg")
+
+
+@router.patch("/unknown/{unknown_id}")
+def update_unknown_face(unknown_id: str, payload: UnknownMetadataUpdate) -> dict:
+    """Update status or administrative notes for an unknown person detection."""
+    updated = unknown_face_service.update_unknown(
+        unknown_id=unknown_id,
+        status=payload.status,
+        notes=payload.notes,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Unknown record not found")
+    return {"success": True, "unknown": updated}
+
+
+@router.delete("/unknown/{unknown_id}")
+def delete_unknown_face(unknown_id: str) -> dict:
+    """Delete an unknown person record and remove its photograph from storage."""
+    deleted = unknown_face_service.delete_unknown(unknown_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Unknown record not found")
+    return {"success": True, "message": f"Unknown record {unknown_id} deleted."}
+
+
+@router.delete("/unknown")
+def clear_all_unknown_faces() -> dict:
+    """Wipe all detected unknown records and stored photos."""
+    count = unknown_face_service.clear_all()
+    return {"success": True, "message": f"Cleared {count} unknown records."}
+
+
+@router.post("/unknown/{unknown_id}/enroll")
+async def enroll_unknown_face(
+    unknown_id: str,
+    name: str = Form(...),
+    is_suspect: bool = Form(True),
+    threat_level: str = Form("HIGH"),
+    category: str = Form("Wanted / BOLO"),
+    notes: Optional[str] = Form(""),
+) -> dict:
+    """
+    1-Click Enroll an unknown person directly into the MAATRIX Facial Recognition database
+    using their saved surveillance photograph.
+    """
+    res = unknown_face_service.enroll_unknown(
+        unknown_id=unknown_id,
+        name=name.strip(),
+        is_suspect=is_suspect,
+        threat_level=threat_level,
+        category=category,
+        notes=notes or "",
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Enrollment failed"))
+    return res
 
 
 @router.patch("/{person_id}")
@@ -588,6 +692,20 @@ async def face_websocket_stream(websocket: WebSocket):
                     enable_distant_mode=True,
                 )
                 annotated = face_service.draw_faces(frame, faces)
+
+                # Record any detected unknown faces for operator console
+                if faces:
+                    for fc in faces:
+                        if not fc.get("is_known"):
+                            try:
+                                unknown_face_service.record_unknown(
+                                    frame=frame,
+                                    face=fc,
+                                    camera_id="cam-webcam",
+                                    camera_name="Operator Terminal Webcam",
+                                )
+                            except Exception as unk_err:
+                                logger.debug("Webcam unknown record error: %s", unk_err)
             except Exception as model_err:
                 logger.warning("WebSocket face frame processing error: %s", model_err)
                 faces = []

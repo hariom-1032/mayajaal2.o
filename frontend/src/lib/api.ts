@@ -27,6 +27,8 @@ import {
   FaceEvent,
   FaceScanResponse,
   RegisterFaceResponse,
+  UnknownPerson,
+  UnknownStats,
 } from "@/types/face";
 import { AlertItem, ScannerStatus, QrtDispatchRecord, SuspectTrajectory, GlobalTraceItem } from "@/types/alert";
 import {
@@ -553,6 +555,100 @@ export const api = {
     return request<{ success: boolean; released_cameras: number }>("/api/faces/camera/stop", {
       method: "POST",
     });
+  },
+
+  /**
+   * Unknown Person Detection & Archival APIs
+   */
+  async getUnknownFaces(params?: {
+    cameraId?: string;
+    search?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ success: boolean; total: number; count: number; unknowns: UnknownPerson[] }> {
+    const qs = new URLSearchParams();
+    if (params?.cameraId && params.cameraId !== "all") qs.append("camera_id", params.cameraId);
+    if (params?.search) qs.append("search", params.search);
+    if (params?.status && params.status !== "all") qs.append("status", params.status);
+    if (params?.limit) qs.append("limit", params.limit.toString());
+    if (params?.offset) qs.append("offset", params.offset.toString());
+    const queryString = qs.toString() ? `?${qs.toString()}` : "";
+    return request<{ success: boolean; total: number; count: number; unknowns: UnknownPerson[] }>(
+      `/api/faces/unknown${queryString}`
+    );
+  },
+
+  async getUnknownFaceStats(): Promise<UnknownStats> {
+    return request<UnknownStats>("/api/faces/unknown/stats");
+  },
+
+  async getUnknownFace(unknownId: string): Promise<{ success: boolean; unknown: UnknownPerson }> {
+    return request<{ success: boolean; unknown: UnknownPerson }>(
+      `/api/faces/unknown/${encodeURIComponent(unknownId)}`
+    );
+  },
+
+  async updateUnknownFace(
+    unknownId: string,
+    updates: { status?: string; notes?: string }
+  ): Promise<{ success: boolean; unknown: UnknownPerson }> {
+    return request<{ success: boolean; unknown: UnknownPerson }>(
+      `/api/faces/unknown/${encodeURIComponent(unknownId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      }
+    );
+  },
+
+  async deleteUnknownFace(unknownId: string): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(
+      `/api/faces/unknown/${encodeURIComponent(unknownId)}`,
+      {
+        method: "DELETE",
+      }
+    );
+  },
+
+  async clearUnknownFaces(): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>("/api/faces/unknown", {
+      method: "DELETE",
+    });
+  },
+
+  async enrollUnknownFace(
+    unknownId: string,
+    payload: {
+      name: string;
+      is_suspect?: boolean;
+      threat_level?: string;
+      category?: string;
+      notes?: string;
+    }
+  ): Promise<RegisterFaceResponse> {
+    const formData = new FormData();
+    formData.append("name", payload.name);
+    if (payload.is_suspect !== undefined) {
+      formData.append("is_suspect", String(payload.is_suspect));
+    }
+    if (payload.threat_level) {
+      formData.append("threat_level", payload.threat_level);
+    }
+    if (payload.category) {
+      formData.append("category", payload.category);
+    }
+    if (payload.notes) {
+      formData.append("notes", payload.notes);
+    }
+    return request<RegisterFaceResponse>(
+      `/api/faces/unknown/${encodeURIComponent(unknownId)}/enroll`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
   },
 
   /**

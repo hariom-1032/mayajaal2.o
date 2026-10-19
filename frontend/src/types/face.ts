@@ -63,3 +63,30 @@ export interface RegisterFaceResponse {
   message?: string;
   error?: string;
 }
+
+export interface UnknownPerson {
+  id: string;
+  timestamp: string;
+  iso_timestamp: string;
+  camera_id: string;
+  camera_name: string;
+  confidence: number;
+  bbox: [number, number, number, number];
+  photo_filename: string;
+  photo_url: string;
+  seen_count: number;
+  last_seen: string;
+  status: "unreviewed" | "flagged" | "enrolled" | "dismissed";
+  notes?: string;
+  enrolled_name?: string | null;
+}
+
+export interface UnknownStats {
+  success: boolean;
+  total_unknowns: number;
+  today_count: number;
+  unreviewed_count: number;
+  enrolled_count: number;
+  by_camera: Record<string, number>;
+}
+

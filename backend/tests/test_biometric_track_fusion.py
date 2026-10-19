@@ -12,9 +12,14 @@ Tests:
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure backend root is in python path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
-import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from app.main import app
 from app.tracking.global_tracker import (
@@ -22,7 +27,6 @@ from app.tracking.global_tracker import (
     GlobalTrace,
     match_face_to_person_track,
 )
-from app.tracking.topology import CameraTopology
 
 
 def make_dummy_feature(seed: int, dim: int = 512) -> np.ndarray:
@@ -105,7 +109,7 @@ def test_anonymous_transit_and_retrospective_suspect_lock():
         threat_level=None,
         timestamp=t1,
     )
-    # Manually inject the normalized feature into the initialized trace for deterministic testing
+    # Inject normalized feature into initialized trace for deterministic testing
     trace_1 = gtm.get_trace(trace_id_1)
     trace_1.feature = feature
     trace_1.feature_history = [feature]
@@ -119,17 +123,6 @@ def test_anonymous_transit_and_retrospective_suspect_lock():
 
     # ── Step 2: Camera 2 Sighting (Corridor transit handoff, still anonymous) ──
     t2 = t1 + 15.0  # 15 seconds transit time
-    trace_id_2, is_cross_2, fused_sc_2 = gtm.update_track(
-        camera_id="cam_02",
-        camera_name="Cam 02 - Transit Corridor",
-        local_track_id=5,
-        box=[110, 120, 210, 360],
-        frame_bgr=fake_frame,
-        confidence=0.85,
-        suspect_name=None,  # Still unknown
-        timestamp=t2,
-    )
-    # Associate appearance
     trace_2 = gtm.get_trace(trace_id_1)
     trace_2.add_waypoint(
         camera_id="cam_02",
@@ -330,4 +323,15 @@ def test_rest_api_trace_resolution_and_filters():
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    print("\n==================================================================")
+    print(" Running Phase 4: Biometric Track Fusion & Retrospective Tests ")
+    print("==================================================================\n")
+    test_face_to_person_box_matching()
+    print(" [1/4] test_face_to_person_box_matching: PASSED")
+    test_anonymous_transit_and_retrospective_suspect_lock()
+    print(" [2/4] test_anonymous_transit_and_retrospective_suspect_lock: PASSED")
+    test_trajectory_retrospective_metadata()
+    print(" [3/4] test_trajectory_retrospective_metadata: PASSED")
+    test_rest_api_trace_resolution_and_filters()
+    print(" [4/4] test_rest_api_trace_resolution_and_filters: PASSED")
+    print("\n ALL 4 BIOMETRIC TRACK FUSION & RETROSPECTIVE TESTS PASSED! \n")

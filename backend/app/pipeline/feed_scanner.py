@@ -15,6 +15,7 @@ from app.api.cameras import _load_cameras
 from app.api.stream import open_video_source
 from app.pipeline.alert_service import alert_service, SNAPSHOTS_DIR
 from app.pipeline.face_service import face_service
+from app.pipeline.unknown_face_service import unknown_face_service
 
 logger = logging.getLogger("SIH26187.FeedScanner")
 
@@ -591,7 +592,21 @@ class ContinuousFaceScanner:
         now_sec = time.time()
 
         for face in faces:
-            if not (face.get("is_known") and face.get("is_threat")):
+            is_known = bool(face.get("is_known", False))
+            if not is_known:
+                # Capture and record unknown person with real timestamp and photograph
+                try:
+                    unknown_face_service.record_unknown(
+                        frame=infer_frame,
+                        face=face,
+                        camera_id=cam_id,
+                        camera_name=cam_name,
+                    )
+                except Exception as unk_err:
+                    logger.debug("Unknown record error in feed scanner: %s", unk_err)
+                continue
+
+            if not face.get("is_threat"):
                 continue
 
             suspect_name = face["name"]

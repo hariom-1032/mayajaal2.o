@@ -29,6 +29,11 @@ import {
   Eye,
   Activity,
   Cpu,
+  Download,
+  Filter,
+  Grid,
+  List,
+  SlidersHorizontal,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import {
@@ -37,13 +42,15 @@ import {
   FaceEngineStatus,
   FaceEvent,
   FaceScanResponse,
+  UnknownPerson,
+  UnknownStats,
 } from "@/types/face";
 
 const BACKEND_BASE_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
 export default function FacialRecognitionPage() {
-  const [activeTab, setActiveTab] = useState<"stream" | "directory" | "scan">("stream");
+  const [activeTab, setActiveTab] = useState<"stream" | "directory" | "unknowns" | "scan">("stream");
 
   // Telemetry & Status
   const [engineStatus, setEngineStatus] = useState<FaceEngineStatus | null>(null);
@@ -51,6 +58,27 @@ export default function FacialRecognitionPage() {
   const [recentEvents, setRecentEvents] = useState<FaceEvent[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // Unknown Persons Archival State
+  const [unknowns, setUnknowns] = useState<UnknownPerson[]>([]);
+  const [unknownStats, setUnknownStats] = useState<UnknownStats | null>(null);
+  const [unknownSearch, setUnknownSearch] = useState<string>("");
+  const [unknownCameraFilter, setUnknownCameraFilter] = useState<string>("all");
+  const [unknownStatusFilter, setUnknownStatusFilter] = useState<string>("all");
+  const [selectedUnknownForInspect, setSelectedUnknownForInspect] = useState<UnknownPerson | null>(null);
+  const [selectedUnknownForEnroll, setSelectedUnknownForEnroll] = useState<UnknownPerson | null>(null);
+  const [unknownViewMode, setUnknownViewMode] = useState<"grid" | "table">("grid");
+  const [isLoadingUnknowns, setIsLoadingUnknowns] = useState<boolean>(false);
+
+  // Quick Enroll Unknown Person Form State
+  const [quickEnrollName, setQuickEnrollName] = useState<string>("");
+  const [quickEnrollIsSuspect, setQuickEnrollIsSuspect] = useState<boolean>(true);
+  const [quickEnrollThreatLevel, setQuickEnrollThreatLevel] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW">("HIGH");
+  const [quickEnrollCategory, setQuickEnrollCategory] = useState<string>("Wanted / BOLO");
+  const [quickEnrollNotes, setQuickEnrollNotes] = useState<string>("");
+  const [isQuickEnrolling, setIsQuickEnrolling] = useState<boolean>(false);
+  const [quickEnrollError, setQuickEnrollError] = useState<string | null>(null);
+  const [quickEnrollSuccess, setQuickEnrollSuccess] = useState<string | null>(null);
 
   // Live Stream State
   const [streamSource, setStreamSource] = useState<string>("browser");
@@ -367,7 +395,8 @@ export default function FacialRecognitionPage() {
     const interval = setInterval(() => {
       fetchEvents();
       fetchStatus();
-    }, 4000);
+      fetchUnknowns();
+    }, 3500);
     return () => clearInterval(interval);
   }, []);
 
@@ -408,7 +437,7 @@ export default function FacialRecognitionPage() {
 
   const refreshAllData = async () => {
     setIsLoading(true);
-    await Promise.all([fetchStatus(), fetchEnrolled(), fetchEvents()]);
+    await Promise.all([fetchStatus(), fetchEnrolled(), fetchEvents(), fetchUnknowns()]);
     setIsLoading(false);
   };
 
@@ -440,6 +469,125 @@ export default function FacialRecognitionPage() {
       }
     } catch {
       // Backend temporarily reconnecting
+    }
+  };
+
+  const fetchUnknowns = async () => {
+    try {
+      setIsLoadingUnknowns(true);
+      const [listRes, statsRes] = await Promise.all([
+        api.getUnknownFaces({ limit: 120 }),
+        api.getUnknownFaceStats().catch(() => null),
+      ]);
+      if (listRes.success) {
+        setUnknowns(listRes.unknowns);
+      }
+      if (statsRes && statsRes.success) {
+        setUnknownStats(statsRes);
+      }
+    } catch {
+      // Backend temporarily reconnecting
+    } finally {
+      setIsLoadingUnknowns(false);
+    }
+  };
+
+  const handleDeleteUnknown = async (id: string) => {
+    if (!confirm(`Are you sure you want to delete unknown record ${id}? The saved photograph will be deleted from disk.`)) {
+      return;
+    }
+    try {
+      await api.deleteUnknownFace(id);
+      setUnknowns((prev) => prev.filter((u) => u.id !== id));
+      if (selectedUnknownForInspect?.id === id) {
+        setSelectedUnknownForInspect(null);
+      }
+      api.getUnknownFaceStats().then((res) => setUnknownStats(res)).catch(() => {});
+    } catch {
+      alert("Failed to delete unknown record.");
+    }
+  };
+
+  const handleClearAllUnknowns = async () => {
+    if (!confirm("Are you sure you want to clear ALL unknown person records and delete their saved photographs? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await api.clearUnknownFaces();
+      setUnknowns([]);
+      setSelectedUnknownForInspect(null);
+      api.getUnknownFaceStats().then((res) => setUnknownStats(res)).catch(() => {});
+    } catch {
+      alert("Failed to clear unknown records.");
+    }
+  };
+
+  const openQuickEnrollModal = (unknown: UnknownPerson) => {
+    setSelectedUnknownForEnroll(unknown);
+    setQuickEnrollName(unknown.enrolled_name || "");
+    setQuickEnrollIsSuspect(true);
+    setQuickEnrollThreatLevel("HIGH");
+    setQuickEnrollCategory("Wanted / BOLO");
+    setQuickEnrollNotes(unknown.notes || `Detected on ${unknown.camera_name || unknown.camera_id} at ${unknown.timestamp}`);
+    setQuickEnrollError(null);
+    setQuickEnrollSuccess(null);
+  };
+
+  const closeQuickEnrollModal = () => {
+    setSelectedUnknownForEnroll(null);
+    setQuickEnrollName("");
+    setQuickEnrollError(null);
+    setQuickEnrollSuccess(null);
+  };
+
+  const handleQuickEnrollSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUnknownForEnroll || !quickEnrollName.trim()) {
+      setQuickEnrollError("Please enter an identity name.");
+      return;
+    }
+
+    setIsQuickEnrolling(true);
+    setQuickEnrollError(null);
+    setQuickEnrollSuccess(null);
+
+    try {
+      const res = await api.enrollUnknownFace(selectedUnknownForEnroll.id, {
+        name: quickEnrollName.trim(),
+        is_suspect: quickEnrollIsSuspect,
+        threat_level: quickEnrollThreatLevel,
+        category: quickEnrollCategory,
+        notes: quickEnrollNotes,
+      });
+
+      if (res.success) {
+        setQuickEnrollSuccess(`Successfully registered ${quickEnrollName.trim()} into Facial Recognition database!`);
+        await Promise.all([fetchEnrolled(), fetchUnknowns()]);
+        setTimeout(() => {
+          closeQuickEnrollModal();
+        }, 1200);
+      } else {
+        setQuickEnrollError(res.error || "Enrollment failed.");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setQuickEnrollError(msg || "Enrollment failed.");
+    } finally {
+      setIsQuickEnrolling(false);
+    }
+  };
+
+  const handleUpdateUnknownStatus = async (unknownId: string, newStatus: "unreviewed" | "flagged" | "dismissed") => {
+    try {
+      const res = await api.updateUnknownFace(unknownId, { status: newStatus });
+      if (res.success) {
+        setUnknowns((prev) => prev.map((u) => (u.id === unknownId ? res.unknown : u)));
+        if (selectedUnknownForInspect?.id === unknownId) {
+          setSelectedUnknownForInspect(res.unknown);
+        }
+      }
+    } catch {
+      alert("Failed to update status.");
     }
   };
 
@@ -748,21 +896,27 @@ export default function FacialRecognitionPage() {
           </div>
         </div>
 
-        {/* Card 3: Events Logged */}
+        {/* Card 3: Unknown Person Detections */}
         <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs flex items-center justify-between">
           <div>
             <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-              Recent Matches
+              Unknown Detections
             </span>
-            <div className="text-2xl font-black text-slate-900 mt-0.5">
-              {recentEvents.length}
+            <div className="text-2xl font-black text-slate-900 mt-0.5 flex items-baseline gap-2">
+              <span>{unknownStats?.total_unknowns ?? unknowns.length}</span>
+              {(unknownStats?.unreviewed_count ?? unknowns.filter((u) => u.status === "unreviewed").length) > 0 && (
+                <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                  <UserX className="w-3 h-3 text-amber-600" />
+                  {unknownStats?.unreviewed_count ?? unknowns.filter((u) => u.status === "unreviewed").length} New
+                </span>
+              )}
             </div>
             <span className="text-[11px] text-slate-500 font-medium">
-              Realtime detections logged
+              {(unknownStats?.today_count ?? 0)} Detected Today Across Feeds
             </span>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-cyan-50 flex items-center justify-center text-cyan-700">
-            <Activity className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-700">
+            <UserX className="w-5 h-5" />
           </div>
         </div>
 
@@ -779,18 +933,18 @@ export default function FacialRecognitionPage() {
               Cosine similarity cutoff
             </span>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-700">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-700">
             <Sparkles className="w-5 h-5" />
           </div>
         </div>
       </div>
 
       {/* NAVIGATION TABS */}
-      <div className="flex items-center gap-2 border-b border-slate-200">
+      <div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab("stream")}
-          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer ${
+          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
             activeTab === "stream"
               ? "bg-white text-emerald-800 border-t-2 border-emerald-600 border-x border-slate-200 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
@@ -803,7 +957,7 @@ export default function FacialRecognitionPage() {
         <button
           type="button"
           onClick={() => setActiveTab("directory")}
-          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer ${
+          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
             activeTab === "directory"
               ? "bg-white text-emerald-800 border-t-2 border-emerald-600 border-x border-slate-200 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
@@ -822,8 +976,28 @@ export default function FacialRecognitionPage() {
 
         <button
           type="button"
+          onClick={() => setActiveTab("unknowns")}
+          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
+            activeTab === "unknowns"
+              ? "bg-white text-amber-800 border-t-2 border-amber-600 border-x border-slate-200 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <UserX className="w-4 h-4 text-amber-600" />
+          <span>
+            Unknown Persons ({unknowns.length})
+            {(unknownStats?.unreviewed_count ?? unknowns.filter((u) => u.status === "unreviewed").length) > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+                {unknownStats?.unreviewed_count ?? unknowns.filter((u) => u.status === "unreviewed").length} New
+              </span>
+            )}
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab("scan")}
-          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer ${
+          className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
             activeTab === "scan"
               ? "bg-white text-emerald-800 border-t-2 border-emerald-600 border-x border-slate-200 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
@@ -1370,6 +1544,441 @@ export default function FacialRecognitionPage() {
         </div>
       )}
 
+      {/* TAB: UNKNOWN PERSON ARCHIVAL LOG */}
+      {activeTab === "unknowns" && (
+        <div className="flex flex-col gap-6">
+          {/* Header Controls Banner */}
+          <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  Unidentified Personnel Log
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                  {unknowns.length} Captured
+                </span>
+                {unknownStats?.today_count ? (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    {unknownStats.today_count} Today
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Automatic optical snapshots & real-time timestamps recorded when un-enrolled faces are detected across camera feeds.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* View Mode Toggle */}
+              <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setUnknownViewMode("grid")}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    unknownViewMode === "grid"
+                      ? "bg-white text-slate-900 shadow-xs"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Grid</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnknownViewMode("table")}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    unknownViewMode === "table"
+                      ? "bg-white text-slate-900 shadow-xs"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Table</span>
+                </button>
+              </div>
+
+              {/* Sync Button */}
+              <button
+                type="button"
+                onClick={fetchUnknowns}
+                disabled={isLoadingUnknowns}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                title="Refresh Records"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLoadingUnknowns ? "animate-spin" : ""}`} />
+                <span>Refresh</span>
+              </button>
+
+              {/* Clear All */}
+              {unknowns.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllUnknowns}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50/60 text-xs font-semibold text-rose-700 hover:bg-rose-100/80 transition-colors cursor-pointer shadow-xs"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Search & Filter Toolbar */}
+          <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs flex flex-col md:flex-row gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search by Unknown ID (e.g. UNK-), camera name, or notes..."
+                value={unknownSearch}
+                onChange={(e) => setUnknownSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/60 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-amber-600 focus:ring-1 focus:ring-amber-600 outline-none transition"
+              />
+              {unknownSearch && (
+                <button
+                  type="button"
+                  onClick={() => setUnknownSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Camera Filter */}
+            <div className="flex items-center gap-2">
+              <Camera className="w-4 h-4 text-slate-400 shrink-0" />
+              <select
+                value={unknownCameraFilter}
+                onChange={(e) => setUnknownCameraFilter(e.target.value)}
+                className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/60 text-slate-700 font-semibold outline-none focus:bg-white cursor-pointer"
+              >
+                <option value="all">All Cameras ({unknowns.length})</option>
+                {Array.from(new Set(unknowns.map((u) => u.camera_name || u.camera_id).filter(Boolean))).map((camName) => (
+                  <option key={camName} value={camName}>
+                    {camName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Status Filter */}
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-slate-400 shrink-0" />
+              <select
+                value={unknownStatusFilter}
+                onChange={(e) => setUnknownStatusFilter(e.target.value)}
+                className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/60 text-slate-700 font-semibold outline-none focus:bg-white cursor-pointer"
+              >
+                <option value="all">All Statuses</option>
+                <option value="unreviewed">Pending Review</option>
+                <option value="enrolled">Enrolled</option>
+                <option value="flagged">Flagged</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Records Display */}
+          {(() => {
+            const filteredUnknowns = unknowns.filter((u) => {
+              const q = unknownSearch.toLowerCase().trim();
+              const matchesSearch =
+                !q ||
+                u.id.toLowerCase().includes(q) ||
+                (u.camera_name && u.camera_name.toLowerCase().includes(q)) ||
+                (u.camera_id && u.camera_id.toLowerCase().includes(q)) ||
+                (u.notes && u.notes.toLowerCase().includes(q)) ||
+                (u.enrolled_name && u.enrolled_name.toLowerCase().includes(q));
+
+              const matchesCam =
+                unknownCameraFilter === "all" ||
+                u.camera_name === unknownCameraFilter ||
+                u.camera_id === unknownCameraFilter;
+
+              const matchesStatus =
+                unknownStatusFilter === "all" || u.status === unknownStatusFilter;
+
+              return matchesSearch && matchesCam && matchesStatus;
+            });
+
+            if (filteredUnknowns.length === 0) {
+              return (
+                <div className="bg-white rounded-2xl border border-slate-200/90 p-12 text-center shadow-xs flex flex-col items-center justify-center">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 mb-4 shadow-inner">
+                    <UserX className="w-8 h-8" />
+                  </div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {unknowns.length === 0 ? "No Unknown Persons Detected Yet" : "No Matching Records Found"}
+                  </h3>
+                  <p className="text-xs text-slate-500 max-w-md mt-1">
+                    {unknowns.length === 0
+                      ? "When an unrecognized individual walks in front of any camera, their ID, real-time timestamp, and photograph are automatically saved here."
+                      : "Try clearing your search query or camera filter to view other captured unidentified individuals."}
+                  </p>
+                  {unknownSearch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUnknownSearch("");
+                        setUnknownCameraFilter("all");
+                        setUnknownStatusFilter("all");
+                      }}
+                      className="mt-4 px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition cursor-pointer"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+              );
+            }
+
+            if (unknownViewMode === "grid") {
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {filteredUnknowns.map((u) => {
+                    const photoSrc = `${BACKEND_BASE_URL}${u.photo_url}`;
+                    return (
+                      <div
+                        key={u.id}
+                        className="bg-white rounded-2xl border border-slate-200/90 shadow-xs hover:shadow-md transition-all flex flex-col overflow-hidden group hover:border-amber-300"
+                      >
+                        {/* Photo Container */}
+                        <div className="relative aspect-square bg-slate-950 flex items-center justify-center overflow-hidden">
+                          <img
+                            src={photoSrc}
+                            alt={`Detected Unknown ${u.id}`}
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src =
+                                "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' fill='%2364748b' viewBox='0 0 24 24'><path d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/></svg>";
+                            }}
+                          />
+
+                          {/* Quick Inspect Button Overlay */}
+                          <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedUnknownForInspect(u)}
+                              className="px-3 py-1.5 rounded-xl bg-white/90 hover:bg-white text-slate-900 text-xs font-bold shadow-lg flex items-center gap-1.5 cursor-pointer backdrop-blur-xs transition"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Inspect</span>
+                            </button>
+                            <a
+                              href={photoSrc}
+                              download={`unknown_${u.id}.jpg`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 rounded-xl bg-white/90 hover:bg-white text-slate-900 shadow-lg cursor-pointer backdrop-blur-xs transition"
+                              title="Download Photograph"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
+
+                          {/* Top Badges */}
+                          <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-1 pointer-events-none">
+                            <span className="font-mono font-black text-[11px] px-2 py-0.5 rounded-md bg-slate-950/85 text-amber-300 border border-amber-500/30 backdrop-blur-xs shadow-xs">
+                              {u.id}
+                            </span>
+                            {u.status === "enrolled" ? (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-950/85 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold backdrop-blur-xs">
+                                Enrolled
+                              </span>
+                            ) : u.status === "flagged" ? (
+                              <span className="px-2 py-0.5 rounded-md bg-rose-950/85 text-rose-300 border border-rose-500/30 text-[10px] font-bold backdrop-blur-xs">
+                                Flagged
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md bg-amber-950/85 text-amber-300 border border-amber-500/30 text-[10px] font-bold backdrop-blur-xs">
+                                Unreviewed
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Confidence Pill Bottom */}
+                          <div className="absolute bottom-2.5 left-2.5 pointer-events-none">
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-900/80 text-white border border-white/10 backdrop-blur-xs">
+                              {u.confidence.toFixed(1)}% Conf
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Details Container */}
+                        <div className="p-3.5 flex flex-col gap-2 flex-1 justify-between">
+                          <div>
+                            {/* Real Time Stamp */}
+                            <div className="flex items-center gap-1.5 text-slate-700">
+                              <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                              <span className="font-mono text-xs font-bold tracking-tight">
+                                {u.timestamp}
+                              </span>
+                            </div>
+
+                            {/* Camera Location */}
+                            <div className="flex items-center gap-1.5 text-slate-500 text-[11px] mt-1">
+                              <Camera className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <span className="truncate font-medium" title={u.camera_name || u.camera_id}>
+                                {u.camera_name || u.camera_id}
+                              </span>
+                            </div>
+
+                            {/* Occurrence */}
+                            <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1.5 pt-1.5 border-t border-slate-100 font-mono">
+                              <span>Seen: {u.seen_count} time{u.seen_count > 1 ? "s" : ""}</span>
+                              {u.enrolled_name && (
+                                <span className="text-emerald-700 font-bold truncate max-w-[120px]">
+                                  As: {u.enrolled_name}
+                                </span>
+                              )}
+                            </div>
+
+                            {u.notes && (
+                              <p className="text-[10px] text-slate-600 mt-1 line-clamp-1 italic bg-slate-50 px-2 py-0.5 rounded border border-slate-100">
+                                &quot;{u.notes}&quot;
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-100 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => openQuickEnrollModal(u)}
+                              className="flex-1 py-1.5 px-2 rounded-xl bg-[#143724] hover:bg-[#1a472f] text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                              title="Register this person with a name"
+                            >
+                              <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>{u.status === "enrolled" ? "Re-Enroll" : "Enroll Identity"}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUnknown(u.id)}
+                              className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            }
+
+            // Table View Mode
+            return (
+              <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      <tr>
+                        <th className="py-3 px-4">Photograph</th>
+                        <th className="py-3 px-4">Unknown ID</th>
+                        <th className="py-3 px-4">Real Timestamp</th>
+                        <th className="py-3 px-4">Camera Feed</th>
+                        <th className="py-3 px-4">Confidence</th>
+                        <th className="py-3 px-4">Seen</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredUnknowns.map((u) => {
+                        const photoSrc = `${BACKEND_BASE_URL}${u.photo_url}`;
+                        return (
+                          <tr key={u.id} className="hover:bg-slate-50/60 transition">
+                            <td className="py-2.5 px-4">
+                              <div
+                                onClick={() => setSelectedUnknownForInspect(u)}
+                                className="w-12 h-12 rounded-xl bg-slate-950 overflow-hidden cursor-pointer relative group border border-slate-200 shadow-xs"
+                              >
+                                <img
+                                  src={photoSrc}
+                                  alt={u.id}
+                                  className="w-full h-full object-cover group-hover:scale-110 transition"
+                                />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white">
+                                  <Eye className="w-3.5 h-3.5" />
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                              <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-800 border border-slate-200">
+                                {u.id}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-mono font-semibold text-slate-700 whitespace-nowrap">
+                              {u.timestamp} IST
+                            </td>
+                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                              {u.camera_name || u.camera_id}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-slate-700 font-bold">
+                              {u.confidence.toFixed(1)}%
+                            </td>
+                            <td className="py-3 px-4 font-mono text-slate-500">
+                              {u.seen_count}x
+                            </td>
+                            <td className="py-3 px-4">
+                              {u.status === "enrolled" ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  Enrolled
+                                </span>
+                              ) : u.status === "flagged" ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                  Flagged
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                                  Pending
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openQuickEnrollModal(u)}
+                                  className="px-2.5 py-1 rounded-lg bg-[#143724] hover:bg-[#1a472f] text-white text-[11px] font-bold transition flex items-center gap-1 cursor-pointer"
+                                >
+                                  <UserPlus className="w-3 h-3 text-emerald-400" />
+                                  <span>Enroll</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedUnknownForInspect(u)}
+                                  className="p-1 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition cursor-pointer"
+                                  title="Inspect Photo"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteUnknown(u.id)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* TAB 3: FORENSIC PHOTO SCAN */}
       {activeTab === "scan" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1884,6 +2493,360 @@ export default function FacialRecognitionPage() {
                 {isEnrolling ? "Verifying & Enrolling..." : "Complete Enrollment"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: INSPECT UNKNOWN PERSON DOSSIER */}
+      {selectedUnknownForInspect && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xl max-w-2xl w-full p-6 flex flex-col gap-5 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <span className="font-mono font-black text-xs px-2.5 py-1 rounded-lg bg-slate-900 text-amber-300 border border-amber-500/30">
+                  {selectedUnknownForInspect.id}
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Unknown Person Dossier
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Captured on {selectedUnknownForInspect.camera_name || selectedUnknownForInspect.camera_id}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedUnknownForInspect(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              {/* Photo View */}
+              <div className="flex flex-col gap-2">
+                <div className="relative aspect-square rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center shadow-inner group">
+                  <img
+                    src={`${BACKEND_BASE_URL}${selectedUnknownForInspect.photo_url}`}
+                    alt={selectedUnknownForInspect.id}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                    <a
+                      href={`${BACKEND_BASE_URL}${selectedUnknownForInspect.photo_url}`}
+                      download={`unknown_${selectedUnknownForInspect.id}.jpg`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1.5 rounded-xl bg-slate-900/90 text-white text-xs font-semibold backdrop-blur-xs flex items-center gap-1.5 shadow-md hover:bg-black transition cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </a>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono text-center truncate">
+                  {selectedUnknownForInspect.photo_filename}
+                </span>
+              </div>
+
+              {/* Metadata Details */}
+              <div className="flex flex-col justify-between gap-3 text-xs">
+                <div className="flex flex-col gap-3">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex flex-col gap-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-[11px]">Real Timestamp</span>
+                      <span className="font-mono font-bold text-slate-800">
+                        {selectedUnknownForInspect.timestamp} IST
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-[11px]">Camera Feed</span>
+                      <span className="font-semibold text-slate-800 truncate max-w-[150px]">
+                        {selectedUnknownForInspect.camera_name || selectedUnknownForInspect.camera_id}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-[11px]">Detection Confidence</span>
+                      <span className="font-mono font-bold text-emerald-800">
+                        {selectedUnknownForInspect.confidence.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-[11px]">Sightings Count</span>
+                      <span className="font-mono font-bold text-slate-800">
+                        {selectedUnknownForInspect.seen_count} detection{selectedUnknownForInspect.seen_count > 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 text-[11px]">Bounding Box</span>
+                      <span className="font-mono text-[10px] text-slate-600">
+                        [{selectedUnknownForInspect.bbox.join(", ")}]
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Status Selection */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Administrative Status
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(["unreviewed", "flagged", "dismissed"] as const).map((st) => (
+                        <button
+                          key={st}
+                          type="button"
+                          onClick={() => handleUpdateUnknownStatus(selectedUnknownForInspect.id, st)}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-semibold capitalize border transition cursor-pointer ${
+                            selectedUnknownForInspect.status === st
+                              ? st === "flagged"
+                                ? "bg-rose-50 border-rose-300 text-rose-700"
+                                : st === "unreviewed"
+                                ? "bg-amber-50 border-amber-300 text-amber-800"
+                                : "bg-slate-100 border-slate-300 text-slate-800"
+                              : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          {st}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Notes */}
+                  {selectedUnknownForInspect.notes && (
+                    <div className="p-2.5 rounded-xl bg-amber-50/60 border border-amber-200/80 text-[11px] text-amber-900">
+                      <span className="font-bold block mb-0.5">Notes / Context:</span>
+                      {selectedUnknownForInspect.notes}
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons in Modal */}
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = selectedUnknownForInspect;
+                      setSelectedUnknownForInspect(null);
+                      openQuickEnrollModal(target);
+                    }}
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-[#143724] hover:bg-[#1a472f] text-white text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <UserPlus className="w-4 h-4 text-emerald-400" />
+                    <span>Enroll as Person</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteUnknown(selectedUnknownForInspect.id)}
+                    className="p-2.5 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                    title="Delete Record"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: QUICK ENROLL UNKNOWN PERSON */}
+      {selectedUnknownForEnroll && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Enroll Unknown Individual
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Auto-loaded photo from detection {selectedUnknownForEnroll.id}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeQuickEnrollModal}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Photo Preview Thumbnail & Metadata */}
+            <div className="flex items-center gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/80">
+              <div className="w-16 h-16 rounded-xl bg-slate-950 overflow-hidden shrink-0 border border-slate-300">
+                <img
+                  src={`${BACKEND_BASE_URL}${selectedUnknownForEnroll.photo_url}`}
+                  alt={selectedUnknownForEnroll.id}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="text-xs flex flex-col gap-0.5">
+                <span className="font-mono font-bold text-slate-900">{selectedUnknownForEnroll.id}</span>
+                <span className="text-slate-500 text-[11px] flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-slate-400" />
+                  {selectedUnknownForEnroll.timestamp} IST
+                </span>
+                <span className="text-slate-500 text-[11px] flex items-center gap-1">
+                  <Camera className="w-3 h-3 text-slate-400" />
+                  {selectedUnknownForEnroll.camera_name || selectedUnknownForEnroll.camera_id}
+                </span>
+              </div>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleQuickEnrollSubmit} className="flex flex-col gap-3.5">
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                  Full Name / Subject Codename *
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Infiltrator Alpha-1, John Doe..."
+                  value={quickEnrollName}
+                  onChange={(e) => setQuickEnrollName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-900 font-semibold focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 outline-none"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              {/* Classification Toggle */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                  Biometric Classification
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickEnrollIsSuspect(true);
+                      setQuickEnrollThreatLevel("HIGH");
+                      setQuickEnrollCategory("Wanted / BOLO");
+                    }}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      quickEnrollIsSuspect
+                        ? "bg-rose-50 border-rose-300 text-rose-700 shadow-xs"
+                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span>Wanted Suspect</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickEnrollIsSuspect(false);
+                      setQuickEnrollThreatLevel("LOW");
+                      setQuickEnrollCategory("Authorized Personnel");
+                    }}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                      !quickEnrollIsSuspect
+                        ? "bg-emerald-50 border-emerald-300 text-emerald-800 shadow-xs"
+                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Authorized Personnel</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Threat Level & Category */}
+              {quickEnrollIsSuspect && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                      Threat Level
+                    </label>
+                    <select
+                      value={quickEnrollThreatLevel}
+                      onChange={(e) => setQuickEnrollThreatLevel(e.target.value as any)}
+                      className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-900 outline-none font-semibold"
+                    >
+                      <option value="CRITICAL">CRITICAL</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="MEDIUM">MEDIUM</option>
+                      <option value="LOW">LOW</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                      Category
+                    </label>
+                    <select
+                      value={quickEnrollCategory}
+                      onChange={(e) => setQuickEnrollCategory(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-900 outline-none"
+                    >
+                      <option value="Wanted / BOLO">Wanted / BOLO</option>
+                      <option value="Infiltrator / Poacher">Infiltrator / Poacher</option>
+                      <option value="Smuggling Suspect">Smuggling Suspect</option>
+                      <option value="Trespasser">Trespasser</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                  Notes / Intelligence
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Captured near BOP Alpha perimeter fence"
+                  value={quickEnrollNotes}
+                  onChange={(e) => setQuickEnrollNotes(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-900 outline-none"
+                />
+              </div>
+
+              {quickEnrollError && (
+                <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                  {quickEnrollError}
+                </div>
+              )}
+
+              {quickEnrollSuccess && (
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  {quickEnrollSuccess}
+                </div>
+              )}
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={closeQuickEnrollModal}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isQuickEnrolling || !quickEnrollName.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-[#143724] hover:bg-[#1a472f] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <UserCheck className="w-4 h-4 text-emerald-400" />
+                  <span>{isQuickEnrolling ? "Registering..." : "Confirm & Enroll Identity"}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
