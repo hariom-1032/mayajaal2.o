@@ -47,13 +47,15 @@ from app.pipeline.rtsp_loader import (
     RTSPReadError,
     RTSPStream,
 )
+from pydantic import BaseModel
+
 from app.tracking.config import TrackerConfig
 from app.tracking.tracker import ByteTrackerWrapper, ByteTrackerError
 from app.tracking.session_store import tracker_session_store
 from app.tracking.annotator import draw_tracked_boxes, convert_video_to_h264
 from app.pipeline.face_service import face_service
 from app.pipeline.alert_service import alert_service, SNAPSHOTS_DIR
-from app.tracking.global_tracker import global_trace_manager
+from app.tracking.global_tracker import global_trace_manager, match_face_to_person_track
 from app.tracking.topology import camera_topology
 from app.tracking.calibration_service import calibration_service
 
@@ -405,6 +407,25 @@ async def video_tracking(
                                     }
                                     tracked_dicts.append(face_dict)
 
+                                    # Spatial Face-to-Person Track Association & Retrospective Biometric Resolution
+                                    matched_person = match_face_to_person_track(f["bbox"], tracked_dicts)
+                                    if matched_person:
+                                        matched_person["suspect_name"] = suspect_name
+                                        matched_person["is_suspect"] = is_threat
+                                        matched_person["threat_level"] = f.get("threat_level") or ("HIGH" if is_threat else None)
+                                        matched_person["category"] = f.get("category")
+                                        matched_person["biometric_locked"] = True
+                                        gtid = matched_person.get("global_trace_id")
+                                        if gtid:
+                                            global_trace_manager.resolve_trace_suspect(
+                                                global_track_id=gtid,
+                                                suspect_name=suspect_name,
+                                                threat_level=f.get("threat_level") or ("HIGH" if is_threat else "LOW"),
+                                                category=f.get("category") or ("SUSPECT" if is_threat else "PERSONNEL"),
+                                                face_confidence=conf,
+                                                source_camera_id=f"video_upload_{session_video_id}",
+                                            )
+
                                     if is_threat and suspect_name and suspect_name not in session_alerted_suspects:
                                         session_alerted_suspects.add(suspect_name)
                                         snap_name = f"suspect_vid_{session_video_id}_{f_idx}.jpg"
@@ -730,6 +751,13 @@ async def rtsp_tracking(
                         td["global_trace_id"] = gtid
                         td["is_cross_camera"] = is_cross
                         td["reid_score"] = r_score
+                        gt = global_trace_manager.get_trace(gtid)
+                        if gt and gt.is_suspect:
+                            td["is_suspect"] = True
+                            td["suspect_name"] = gt.suspect_name
+                            td["threat_level"] = gt.threat_level or "HIGH"
+                            td["category"] = gt.category
+                            td["biometric_locked"] = gt.biometric_locked
                     except Exception as reid_err:
                         logger.debug("ReID update skip in RTSP tracking: %s", reid_err)
 
@@ -877,10 +905,24 @@ async def get_annotated_frame(video_id: str, frame_index: int):
 # Global Multi-Camera Person Re-ID Endpoints
 # ---------------------------------------------------------------------------
 
+class ResolveTraceRequest(BaseModel):
+    suspect_name: str
+    threat_level: Optional[str] = "HIGH"
+    category: Optional[str] = "SUSPECT"
+    face_confidence: Optional[float] = 1.0
+    source_camera_id: Optional[str] = None
+
+
 @router.get("/global/traces")
-async def list_global_traces():
+async def list_global_traces(
+    suspect_only: bool = False,
+    biometric_locked_only: bool = False,
+):
     """List all active cross-camera person traces with recent sightings and trajectory counts."""
-    traces = global_trace_manager.list_active_traces()
+    traces = global_trace_manager.list_active_traces(
+        suspect_only=suspect_only,
+        biometric_locked_only=biometric_locked_only,
+    )
     return {
         "status": "success",
         "total_active": len(traces),
@@ -895,6 +937,34 @@ async def get_global_trace_trajectory(trace_id: str):
     if not traj.get("found"):
         raise HTTPException(status_code=404, detail=f"Global trace '{trace_id}' not found or expired.")
     return traj
+
+
+@router.post("/global/traces/{trace_id}/resolve")
+async def resolve_global_trace_biometric(
+    trace_id: str,
+    req: ResolveTraceRequest,
+):
+    """
+    Lock a verified biometric suspect identity onto an active or historical Global Trace.
+    Retrospectively attributes all past camera sightings in this trace to the suspect.
+    """
+    resolved_trace = global_trace_manager.resolve_trace_suspect(
+        global_track_id=trace_id,
+        suspect_name=req.suspect_name,
+        threat_level=req.threat_level or "HIGH",
+        category=req.category or "SUSPECT",
+        face_confidence=req.face_confidence or 1.0,
+        source_camera_id=req.source_camera_id,
+    )
+    if not resolved_trace:
+        raise HTTPException(status_code=404, detail=f"Global trace '{trace_id}' not found.")
+
+    return {
+        "status": "success",
+        "message": f"Biometric identity '{req.suspect_name}' successfully locked to trace '{trace_id}'.",
+        "trace": resolved_trace.to_dict(),
+        "retrospective_waypoints_updated": len(resolved_trace.waypoints),
+    }
 
 
 @router.delete("/global/traces")

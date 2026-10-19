@@ -38,6 +38,8 @@ def calc_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
 class GlobalTrace:
     """
     Persistent global identity representing a person observed across one or more cameras.
+    Supports retrospective biometric resolution when an anonymous track is subsequently
+    identified at a facial recognition choke point.
     """
 
     def __init__(
@@ -68,6 +70,11 @@ class GlobalTrace:
         self.threat_level: Optional[str] = threat_level
         self.category: Optional[str] = category
         self.is_suspect: bool = bool(suspect_name and (threat_level or "ALERT") != "LOW")
+        self.biometric_locked: bool = self.is_suspect
+        self.biometric_confidence: Optional[float] = 1.0 if self.is_suspect else None
+        self.biometric_source_camera: Optional[str] = camera_id if self.is_suspect else None
+        self.resolved_retrospectively: bool = False
+        self.resolved_at: Optional[float] = timestamp if self.is_suspect else None
 
         # Chronological list of camera sightings / transit events
         self.waypoints: list[dict[str, Any]] = [
@@ -84,6 +91,12 @@ class GlobalTrace:
                 "speed_kmh": 0.0,
                 "footprint_ground_m": [round(float(v), 2) for v in footprint_ground_m] if footprint_ground_m else None,
                 "footprint_gps": [round(float(v), 6) for v in footprint_gps] if footprint_gps else None,
+                "is_suspect": self.is_suspect,
+                "suspect_name": self.suspect_name,
+                "threat_level": self.threat_level,
+                "category": self.category,
+                "biometric_locked": self.biometric_locked,
+                "retrospective": False,
             }
         ]
 
@@ -121,10 +134,50 @@ class GlobalTrace:
                 "speed_kmh": round(float(speed_kmh), 2) if speed_kmh is not None else None,
                 "footprint_ground_m": [round(float(v), 2) for v in footprint_ground_m] if footprint_ground_m else None,
                 "footprint_gps": [round(float(v), 6) for v in footprint_gps] if footprint_gps else None,
+                "is_suspect": self.is_suspect,
+                "suspect_name": self.suspect_name,
+                "threat_level": self.threat_level,
+                "category": self.category,
+                "biometric_locked": self.biometric_locked,
+                "retrospective": False,
             }
         )
         self.last_camera_id = camera_id
         self.last_camera_name = camera_name
+
+    def resolve_suspect_identity(
+        self,
+        suspect_name: str,
+        threat_level: str = "HIGH",
+        category: str = "SUSPECT",
+        face_confidence: float = 1.0,
+        source_camera_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+    ) -> None:
+        """
+        Retrospectively locks biometric identity to this trace.
+        Backfills suspect attribution to all historical waypoints across all cameras.
+        """
+        was_previously_suspect = self.is_suspect
+        self.is_suspect = True
+        self.suspect_name = suspect_name
+        self.threat_level = threat_level or "HIGH"
+        self.category = category or "SUSPECT"
+        self.biometric_locked = True
+        self.biometric_confidence = round(float(face_confidence), 3)
+        self.biometric_source_camera = source_camera_id or self.last_camera_id
+        self.resolved_retrospectively = not was_previously_suspect
+        self.resolved_at = timestamp if timestamp is not None else time.time()
+
+        for wp in self.waypoints:
+            wp_was_suspect = wp.get("is_suspect", False)
+            wp["is_suspect"] = True
+            wp["suspect_name"] = self.suspect_name
+            wp["threat_level"] = self.threat_level
+            wp["category"] = self.category
+            wp["biometric_locked"] = True
+            if not wp_was_suspect:
+                wp["retrospective"] = True
 
     def update_feature(self, new_feature: np.ndarray, alpha: float = 0.85) -> None:
         """
@@ -171,6 +224,11 @@ class GlobalTrace:
             "suspect_name": self.suspect_name,
             "threat_level": self.threat_level,
             "category": self.category,
+            "biometric_locked": self.biometric_locked,
+            "biometric_confidence": self.biometric_confidence,
+            "biometric_source_camera": self.biometric_source_camera,
+            "resolved_retrospectively": self.resolved_retrospectively,
+            "resolved_at": self.resolved_at,
             "waypoints_count": len(self.waypoints),
             "average_speed_kmh": avg_speed,
         }
@@ -284,11 +342,15 @@ class GlobalTraceManager:
                     self._local_last_seen[map_key] = now
 
                     # Attach suspect identity if newly discovered
-                    if suspect_name and not trace.suspect_name:
-                        trace.suspect_name = suspect_name
-                        trace.threat_level = threat_level or "HIGH"
-                        trace.category = category or "Wanted / BOLO"
-                        trace.is_suspect = True
+                    if suspect_name and not trace.is_suspect:
+                        trace.resolve_suspect_identity(
+                            suspect_name=suspect_name,
+                            threat_level=threat_level or "HIGH",
+                            category=category or "Wanted / BOLO",
+                            face_confidence=confidence,
+                            source_camera_id=camera_id,
+                            timestamp=now,
+                        )
 
                     return trace.trace_id, False, 1.0
 
@@ -444,11 +506,15 @@ class GlobalTraceManager:
                     )
 
                 # Attach suspect if present
-                if suspect_name and not trace.suspect_name:
-                    trace.suspect_name = suspect_name
-                    trace.threat_level = threat_level or "HIGH"
-                    trace.category = category or "Wanted / BOLO"
-                    trace.is_suspect = True
+                if suspect_name and not trace.is_suspect:
+                    trace.resolve_suspect_identity(
+                        suspect_name=suspect_name,
+                        threat_level=threat_level or "HIGH",
+                        category=category or "Wanted / BOLO",
+                        face_confidence=confidence,
+                        source_camera_id=camera_id,
+                        timestamp=now,
+                    )
 
                 self._camera_local_map[map_key] = trace.trace_id
                 self._local_last_seen[map_key] = now
@@ -479,13 +545,68 @@ class GlobalTraceManager:
             logger.info("New Global Trace initialized: %s on %s (Local ID #%d)", trace_id, camera_name, local_track_id)
             return trace_id, False, 1.0
 
+    def find_trace_by_camera_and_local_id(self, camera_id: str, local_track_id: int) -> Optional[GlobalTrace]:
+        """Retrieve GlobalTrace for an active local tracker ID in a camera."""
+        with self.lock:
+            tid = self._camera_local_map.get((camera_id, int(local_track_id)))
+            if tid:
+                return self._traces.get(tid)
+            return None
+
+    def resolve_trace_suspect(
+        self,
+        global_track_id: str,
+        suspect_name: str,
+        threat_level: str = "HIGH",
+        category: str = "SUSPECT",
+        face_confidence: float = 1.0,
+        source_camera_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+    ) -> Optional[GlobalTrace]:
+        """
+        Resolve an active global trace to a verified biometric suspect identity.
+        Retrospectively tags all past observations across all cameras with the suspect's identity.
+        """
+        with self.lock:
+            trace = self._traces.get(global_track_id)
+            if not trace:
+                logger.warning("Attempted to resolve suspect on nonexistent trace %s", global_track_id)
+                return None
+
+            trace.resolve_suspect_identity(
+                suspect_name=suspect_name,
+                threat_level=threat_level,
+                category=category,
+                face_confidence=face_confidence,
+                source_camera_id=source_camera_id,
+                timestamp=timestamp,
+            )
+            logger.info(
+                "Biometric suspect locked for trace %s: %s (threat=%s, conf=%.2f, source_cam=%s, retrospective=%s)",
+                global_track_id,
+                suspect_name,
+                threat_level,
+                face_confidence,
+                source_camera_id,
+                trace.resolved_retrospectively,
+            )
+            return trace
+
     def get_trace(self, trace_id: str) -> Optional[GlobalTrace]:
         with self.lock:
             return self._traces.get(trace_id)
 
-    def list_active_traces(self) -> list[dict[str, Any]]:
+    def list_active_traces(
+        self,
+        suspect_only: bool = False,
+        biometric_locked_only: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.lock:
             traces_list = [t.to_dict() for t in self._traces.values()]
+            if suspect_only:
+                traces_list = [t for t in traces_list if t.get("is_suspect")]
+            if biometric_locked_only:
+                traces_list = [t for t in traces_list if t.get("biometric_locked")]
             # Sort with cross-camera and suspects at the top, then recent sightings
             traces_list.sort(key=lambda x: (x["is_cross_camera"], x["is_suspect"], x["last_seen"]), reverse=True)
             return traces_list
@@ -494,6 +615,7 @@ class GlobalTraceManager:
         """
         Reconstruct the chronological multi-camera GPS trajectory for a given Global Trace ID.
         Calculates cumulative distance (km), elapsed transit times, and waypoint coordinates.
+        Carries retrospective biometric lock status and suspect details for each waypoint.
         """
         with self.lock:
             trace = self._traces.get(trace_id)
@@ -509,6 +631,11 @@ class GlobalTraceManager:
             suspect_name = trace.suspect_name
             threat_level = trace.threat_level
             category = trace.category
+            biometric_locked = trace.biometric_locked
+            biometric_confidence = trace.biometric_confidence
+            biometric_source_camera = trace.biometric_source_camera
+            resolved_retrospectively = trace.resolved_retrospectively
+            resolved_at = trace.resolved_at
 
         cameras_map: dict[str, dict[str, Any]] = self._camera_meta
         if not cameras_map and DATA_FILE.exists():
@@ -563,6 +690,12 @@ class GlobalTraceManager:
                     "speed_kmh": wp.get("speed_kmh", 0.0),
                     "footprint_ground_m": wp.get("footprint_ground_m"),
                     "footprint_gps": wp.get("footprint_gps"),
+                    "is_suspect": wp.get("is_suspect", bool(suspect_name)),
+                    "suspect_name": wp.get("suspect_name", suspect_name),
+                    "threat_level": wp.get("threat_level", threat_level),
+                    "category": wp.get("category", category),
+                    "biometric_locked": wp.get("biometric_locked", biometric_locked),
+                    "retrospective": wp.get("retrospective", False),
                 }
             )
 
@@ -574,6 +707,11 @@ class GlobalTraceManager:
             "suspect_name": suspect_name,
             "threat_level": threat_level,
             "category": category,
+            "biometric_locked": biometric_locked,
+            "biometric_confidence": biometric_confidence,
+            "biometric_source_camera": biometric_source_camera,
+            "resolved_retrospectively": resolved_retrospectively,
+            "resolved_at": resolved_at,
             "total_sightings": len(enriched_waypoints),
             "total_distance_km": round(total_distance, 2),
             "last_location": last_wp["camera_name"] if last_wp else "Unknown",
@@ -617,3 +755,73 @@ class GlobalTraceManager:
 
 
 global_trace_manager = GlobalTraceManager()
+
+
+def match_face_to_person_track(
+    face_box: list[float],
+    person_tracks: list[dict[str, Any]],
+    containment_threshold: float = 0.50,
+) -> Optional[dict[str, Any]]:
+    """
+    Associates a 2D face bounding box [fx1, fy1, fx2, fy2] to the corresponding
+    person bounding box in person_tracks.
+
+    Spatial Association Logic:
+    1. Center Containment: The face center (fcx, fcy) must be inside the person's horizontal bounds
+       [px1 - margin, px2 + margin] and upper body vertical bounds [py1, py1 + 0.65 * (py2 - py1)].
+    2. Intersection Over Face Area (IoF): The intersection area between face box and person box
+       divided by face area must exceed containment_threshold (default 0.50).
+
+    Returns the best matching person track dict, or None if no valid match.
+    """
+    if not face_box or len(face_box) < 4 or not person_tracks:
+        return None
+
+    fx1, fy1, fx2, fy2 = [float(v) for v in face_box[:4]]
+    if fx2 <= fx1 or fy2 <= fy1:
+        return None
+
+    fcx = (fx1 + fx2) / 2.0
+    fcy = (fy1 + fy2) / 2.0
+    face_area = (fx2 - fx1) * (fy2 - fy1)
+
+    best_match: Optional[dict[str, Any]] = None
+    best_overlap_ratio: float = -1.0
+
+    for pt in person_tracks:
+        c_name = str(pt.get("class_name", "")).lower()
+        c_id = pt.get("class_id")
+        if c_id not in (0, None) and c_name and c_name not in ("person", "human", "pedestrian"):
+            continue
+
+        p_box = pt.get("box")
+        if not p_box or len(p_box) < 4:
+            continue
+
+        px1, py1, px2, py2 = [float(v) for v in p_box[:4]]
+        p_w = px2 - px1
+        p_h = py2 - py1
+        if p_w <= 0 or p_h <= 0:
+            continue
+
+        # Intersection box
+        ix1 = max(fx1, px1)
+        iy1 = max(fy1, py1)
+        ix2 = min(fx2, px2)
+        iy2 = min(fy2, py2)
+
+        iw = max(0.0, ix2 - ix1)
+        ih = max(0.0, iy2 - iy1)
+        intersection_area = iw * ih
+        iof = intersection_area / face_area
+
+        # Center check: face center should reside inside person box, particularly upper 65% (head/chest)
+        h_margin = 0.10 * p_w
+        center_inside_x = (px1 - h_margin) <= fcx <= (px2 + h_margin)
+        center_inside_y = py1 <= fcy <= (py1 + 0.65 * p_h)
+
+        if (iof >= containment_threshold or (center_inside_x and center_inside_y)) and iof > best_overlap_ratio:
+            best_overlap_ratio = iof
+            best_match = pt
+
+    return best_match

@@ -651,6 +651,13 @@ def stream_generator(
                                             det["global_trace_id"] = gtid
                                             det["is_cross_camera"] = is_cross
                                             det["reid_score"] = reid_sc
+                                            gt = global_trace_manager.get_trace(gtid)
+                                            if gt and gt.is_suspect:
+                                                det["is_threat"] = True
+                                                det["threat_level"] = gt.threat_level or "HIGH"
+                                                det["suspect_name"] = gt.suspect_name
+                                                det["category"] = gt.category
+                                                det["biometric_locked"] = gt.biometric_locked
                                 except Exception as g_err:
                                     logger.debug("Global Re-ID update skip: %s", g_err)
                                 # ── Geofence & Directional Tripwire Real-Time Breach Evaluation ──
@@ -715,6 +722,37 @@ def stream_generator(
                             enable_distant_mode=True,
                             person_boxes=person_boxes if person_boxes else None,
                         )
+                        if cached_faces and cached_detections:
+                            try:
+                                from app.tracking.global_tracker import match_face_to_person_track, global_trace_manager
+                                for fc in cached_faces:
+                                    if fc.get("is_threat") or fc.get("is_known"):
+                                        fc_box = fc.get("bbox") or fc.get("box")
+                                        if fc_box:
+                                            mp = match_face_to_person_track(fc_box, cached_detections)
+                                            if mp:
+                                                f_name = fc.get("name", "Unknown")
+                                                is_th = bool(fc.get("is_threat", False))
+                                                t_lvl = fc.get("threat_level") or ("HIGH" if is_th else "LOW")
+                                                cat = fc.get("category") or ("SUSPECT" if is_th else "PERSONNEL")
+                                                f_conf = float(fc.get("calibrated_conf") or fc.get("match_score") or fc.get("confidence") or 0.85)
+                                                mp["suspect_name"] = f_name
+                                                mp["is_threat"] = is_th
+                                                mp["threat_level"] = t_lvl
+                                                mp["category"] = cat
+                                                mp["biometric_locked"] = True
+                                                gtid = mp.get("global_trace_id")
+                                                if gtid:
+                                                    global_trace_manager.resolve_trace_suspect(
+                                                        global_track_id=gtid,
+                                                        suspect_name=f_name,
+                                                        threat_level=t_lvl,
+                                                        category=cat,
+                                                        face_confidence=f_conf,
+                                                        source_camera_id=effective_cam_id,
+                                                    )
+                            except Exception as fusion_err:
+                                logger.debug("Live stream face-to-track fusion error: %s", fusion_err)
                     except Exception as exc:
                         logger.debug("Live stream face recognition exception: %s", exc)
 
