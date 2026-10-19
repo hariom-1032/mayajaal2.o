@@ -34,6 +34,20 @@ _SCENE_CHANGE_THRESH = 0.03    # pixel-diff ratio to consider the scene changed
 _BLUR_VAR_MIN = 20.0           # Laplacian variance below which frame is too blurry
 _DARKNESS_MEAN_MIN = 15.0      # mean brightness below which frame is too dark
 
+# --- Suspect detection effectiveness tuning ---
+# Number of consecutive corroborating detections required before a suspect alert fires.
+# 1 = fire on first hit (fast but allows single-frame false positives).
+# 2 = require 2 independent frames (recommended: eliminates most transient hits).
+_SUSPECT_CONFIRM_FRAMES = 2
+# Seconds after a suspect detection during which the scene-change gate is bypassed
+# so we never miss follow-up frames of the same person.
+_SUSPECT_BYPASS_SECONDS = 10.0
+# Detector confidence threshold for the focused second-pass on the upper frame region.
+# Lower than the global pass so partially occluded / profile faces are caught.
+_SECOND_PASS_DET_THRESH = 0.20
+# Number of recent frames to keep per camera for sharpest-frame snapshot selection.
+_BEST_FRAME_POOL = 5
+
 
 # ---------------------------------------------------------------------------
 # _FrameBuffer — non-blocking per-camera capture thread
@@ -137,6 +151,14 @@ class ContinuousFaceScanner:
         # Dynamic camera refresh thread (improvement #8)
         self._refresh_stop_evt: Optional[threading.Event] = None
         self._refresh_thread: Optional[threading.Thread] = None
+
+        # --- Suspect detection effectiveness ---
+        # Rolling evidence buffer: (suspect_name, cam_id) -> consecutive hit count
+        self._suspect_evidence: dict[tuple[str, str], int] = {}
+        # Timestamp of last confirmed suspect sighting per camera (for scene-change bypass)
+        self._suspect_last_seen: dict[str, float] = {}
+        # Sharpest-frame pool: cam_id -> list of (laplacian_var, frame) tuples (capped at _BEST_FRAME_POOL)
+        self._best_frames: dict[str, list[tuple[float, np.ndarray]]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -260,6 +282,8 @@ class ContinuousFaceScanner:
         if buf:
             buf.stop()
         self._cam_intervals.pop(cam_id, None)
+        self._best_frames.pop(cam_id, None)
+        self._suspect_last_seen.pop(cam_id, None)
         logger.info("Stopped scanner worker for camera %s", cam_id)
 
     # ------------------------------------------------------------------
@@ -332,6 +356,34 @@ class ContinuousFaceScanner:
     # ------------------------------------------------------------------
     # Improvement #4 — Blur & darkness rejection
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _laplacian_var(frame: np.ndarray) -> float:
+        """Compute Laplacian variance of a frame (higher = sharper)."""
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        except Exception:
+            return 0.0
+
+    def _update_best_frame_pool(self, cam_id: str, frame: np.ndarray) -> None:
+        """
+        Maintain a pool of the sharpest recent frames for this camera.
+        Used to pick the clearest frame for alert snapshots.
+        """
+        lap_var = self._laplacian_var(frame)
+        pool = self._best_frames.setdefault(cam_id, [])
+        pool.append((lap_var, frame.copy()))
+        if len(pool) > _BEST_FRAME_POOL:
+            pool.sort(key=lambda x: x[0], reverse=True)
+            pool[:] = pool[:_BEST_FRAME_POOL]
+
+    def _get_best_frame(self, cam_id: str, fallback: np.ndarray) -> np.ndarray:
+        """Return the sharpest cached frame for a camera, or the fallback frame."""
+        pool = self._best_frames.get(cam_id)
+        if pool:
+            return max(pool, key=lambda x: x[0])[1]
+        return fallback
 
     @staticmethod
     def _is_frame_usable(frame: np.ndarray) -> bool:
@@ -465,8 +517,15 @@ class ContinuousFaceScanner:
 
             # ----------------------------------------------------------------
             # Improvement #3 — skip static scenes
+            # Bypass gate if a suspect was recently active on this camera so we
+            # never miss follow-up frames of the same person.
             # ----------------------------------------------------------------
-            if not self._is_scene_changed(last_frame, frame):
+            now_check = time.time()
+            suspect_bypass_active = (
+                now_check - self._suspect_last_seen.get(cam_id, 0.0)
+            ) < _SUSPECT_BYPASS_SECONDS
+
+            if not suspect_bypass_active and not self._is_scene_changed(last_frame, frame):
                 self._adjust_interval(cam_id, 0)
                 stop_evt.wait(self._cam_intervals.get(cam_id, self.frame_interval))
                 continue
@@ -483,6 +542,9 @@ class ContinuousFaceScanner:
                 continue
 
             last_frame = frame
+
+            # Update sharpest-frame pool (used later for high-quality snapshots)
+            self._update_best_frame_pool(cam_id, frame)
 
             # Update telemetry
             with self.lock:
@@ -536,11 +598,16 @@ class ContinuousFaceScanner:
         frame: np.ndarray,
     ) -> dict[str, Any]:
         """
-        Execute face detection + recognition on the pool thread and return a
-        result bundle.  Any exception is captured so the callback can log it.
+        Execute a two-pass face detection + recognition sweep and return a
+        merged result bundle.  Any exception is captured so the callback can log it.
+
+        Pass 1 — Global full-frame scan (distant mode, det_thresh=0.25).
+        Pass 2 — Focused upper-half 2× upscale scan with a lower det_thresh=0.20
+                  to catch small / profile faces missed by the global pass.
+        Detections from both passes are merged and deduplicated by IoU.
         """
         try:
-            # Run UniFace recognition with surveillance-calibrated parameters
+            # --- Pass 1: standard global distant scan ---
             faces = face_service.detect_and_recognize(
                 frame,
                 min_match_score=None,
@@ -549,6 +616,50 @@ class ContinuousFaceScanner:
                 use_temporal_smoothing=False,
                 enable_distant_mode=True,
             )
+
+            # --- Pass 2: focused upper-half with 2× upscale + lower threshold ---
+            # The upper ~60% of a CCTV frame typically contains all pedestrian faces.
+            # Upscaling before detection lets RetinaFace resolve smaller face regions.
+            try:
+                h, w = frame.shape[:2]
+                upper_h = int(h * 0.62)
+                upper_crop = frame[:upper_h, :]
+                upscale_factor = 2.0
+                up_w = int(w * upscale_factor)
+                up_h = int(upper_h * upscale_factor)
+                upper_up = cv2.resize(upper_crop, (up_w, up_h),
+                                      interpolation=cv2.INTER_CUBIC)
+                # Unsharp-mask the upscaled crop to restore edge detail
+                blurred_up = cv2.GaussianBlur(upper_up, (0, 0), 1.2)
+                upper_up = cv2.addWeighted(upper_up, 1.3, blurred_up, -0.3, 0)
+
+                faces_p2 = face_service.detect_and_recognize(
+                    upper_up,
+                    min_match_score=None,
+                    min_face_size=10,
+                    det_score_thresh=_SECOND_PASS_DET_THRESH,
+                    use_temporal_smoothing=False,
+                    enable_distant_mode=True,
+                )
+
+                # Remap pass-2 bboxes back to original frame coordinates
+                inv = 1.0 / upscale_factor
+                for f2 in faces_p2:
+                    if "bbox" in f2:
+                        bx1, by1, bx2, by2 = f2["bbox"]
+                        f2["bbox"] = [
+                            round(bx1 * inv, 2),
+                            round(by1 * inv, 2),
+                            round(bx2 * inv, 2),
+                            round(by2 * inv, 2),
+                        ]
+                    f2["_pass"] = 2
+
+                if faces_p2:
+                    faces = list(faces) + faces_p2
+            except Exception as p2_err:
+                logger.debug("Pass-2 scan error on %s: %s", cam_name, p2_err)
+
             return {
                 "ok": True,
                 "cam_id": cam_id,
@@ -590,8 +701,17 @@ class ContinuousFaceScanner:
 
         now_sec = time.time()
 
+        # Deduplicate merged pass-1 + pass-2 results by IoU before processing
+        if len(faces) > 1:
+            from app.pipeline.face_service import deduplicate_face_detections
+            faces = deduplicate_face_detections(faces, iou_thresh=0.35)
+
         for face in faces:
             if not (face.get("is_known") and face.get("is_threat")):
+                # Decay evidence counter for non-hits so stale evidence expires
+                for key in list(self._suspect_evidence.keys()):
+                    if key[1] == cam_id:
+                        self._suspect_evidence[key] = max(0, self._suspect_evidence[key] - 1)
                 continue
 
             suspect_name = face["name"]
@@ -599,23 +719,48 @@ class ContinuousFaceScanner:
             category = face.get("category", "Wanted / BOLO")
             calibrated_conf = face.get("calibrated_conf", 85.0)
 
-            # Debounce check
-            debounce_key = (suspect_name.lower(), cam_id)
+            # ------------------------------------------------------------------
+            # Rolling evidence buffer — require _SUSPECT_CONFIRM_FRAMES
+            # consecutive corroborating detections before firing an alert.
+            # This eliminates transient single-frame false positives.
+            # ------------------------------------------------------------------
+            evidence_key = (suspect_name.lower(), cam_id)
+            self._suspect_evidence[evidence_key] = (
+                self._suspect_evidence.get(evidence_key, 0) + 1
+            )
+            hit_count = self._suspect_evidence[evidence_key]
+
+            # Mark that a suspect was recently active on this camera so the
+            # scene-change gate stays bypassed for _SUSPECT_BYPASS_SECONDS.
+            self._suspect_last_seen[cam_id] = now_sec
+
+            if hit_count < _SUSPECT_CONFIRM_FRAMES:
+                logger.debug(
+                    "⚠ Suspect candidate '%s' on %s — evidence %d/%d (awaiting corroboration)",
+                    suspect_name, cam_name, hit_count, _SUSPECT_CONFIRM_FRAMES,
+                )
+                continue
+
+            # Debounce check (cooldown window after a confirmed alert)
+            debounce_key = evidence_key
             last_time = self.last_alert_time.get(debounce_key, 0.0)
             if now_sec - last_time < self.cooldown_seconds:
                 continue
 
+            # Evidence confirmed — reset counter so re-entry after cooldown needs fresh evidence
+            self._suspect_evidence[evidence_key] = 0
             self.last_alert_time[debounce_key] = now_sec
             with self.lock:
                 self.total_suspects_found += 1
 
             logger.warning(
-                "🚨 SUSPECT MATCH DETECTED on %s (%s): %s [%s] (Conf: %.1f%%)",
+                "🚨 SUSPECT CONFIRMED on %s (%s): %s [%s] (Conf: %.1f%%) — evidence corroborated",
                 cam_name, cam_id, suspect_name, threat_lvl, calibrated_conf,
             )
 
-            # Annotate frame snapshot
-            annotated_snapshot = face_service.draw_faces(infer_frame, [face])
+            # Use the sharpest cached frame (not the trigger frame) for the snapshot
+            snapshot_frame = self._get_best_frame(cam_id, infer_frame)
+            annotated_snapshot = face_service.draw_faces(snapshot_frame, [face])
 
             # Save snapshot JPEG
             ts_str = int(now_sec * 1000)
