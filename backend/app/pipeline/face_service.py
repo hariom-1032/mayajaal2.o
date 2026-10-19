@@ -887,18 +887,27 @@ class FaceService:
         best_category = "Unknown"
 
         # Quality-adaptive and distance-adaptive thresholding
-        if is_distant:
-            effective_thresh = min_match_score * 0.72
-        elif 0 < face_size < 80:
-            # Small-ish but not full distant mode — moderate relaxation
-            effective_thresh = min_match_score * 0.85
-        else:
-            effective_thresh = min_match_score
+        base_thresh = float(min_match_score)
 
-        # Adapt slightly based on probe quality: if degraded quality (<0.40), adapt threshold down
-        if probe_quality < 0.40 and effective_thresh > 0.25:
-            quality_factor = 0.90 + 0.10 * max(0.0, probe_quality / 0.40)
-            effective_thresh = max(0.24, effective_thresh * quality_factor)
+        # Distant surveillance threshold adaptation:
+        # Prevent false positives in 512-D AdaFace space:
+        # Floor must never drop below 0.30 (random strangers regularly score 0.20-0.28).
+        if is_distant:
+            effective_thresh = max(0.30, base_thresh * 0.90)
+        elif 0 < face_size < 80:
+            effective_thresh = max(0.30, base_thresh * 0.94)
+        else:
+            effective_thresh = base_thresh
+
+        # EDifFIQA Probe quality gating:
+        # When probe face quality is poor/blurry (<0.28), embeddings are noisy.
+        # Strict biometric rule: Do NOT lower threshold on degraded probes.
+        # Instead, enforce base threshold (or stricter) to prevent background collisions.
+        if probe_quality < 0.28:
+            effective_thresh = max(effective_thresh, base_thresh)
+        elif probe_quality >= 0.60 and is_distant:
+            # High-fidelity distant crops have trustworthy features; allow slight adaptive relaxation down to 0.29 floor
+            effective_thresh = max(0.29, effective_thresh * 0.96)
 
         if not known_list:
             return best_name, best_score, is_known, best_threat_level, best_category, False
@@ -928,8 +937,8 @@ class FaceService:
             # near-threshold match, add a small reliability bonus.
             if centroid_score > 0 and p_best_score > 0:
                 centroid_gap = p_best_score - centroid_score
-                if centroid_gap < 0.06 and centroid_score >= effective_thresh * 0.85:
-                    p_best_score = min(p_best_score + 0.025, 1.0)
+                if centroid_gap < 0.05 and centroid_score >= (effective_thresh * 0.95):
+                    p_best_score = min(p_best_score + 0.02, 1.0)
 
             if p_best_score > -1.0:
                 scored_candidates.append((p, p_best_score))
@@ -942,11 +951,14 @@ class FaceService:
         best_person, best_score = scored_candidates[0]
         second_best_score = scored_candidates[1][1] if len(scored_candidates) > 1 else -1.0
 
-        # Margin check: only enforce for distant mode when gallery has >= 3 persons.
-        # With few enrolled persons the margin guard rejects valid matches unnecessarily.
+        # Margin check & Single-gallery open-set protection:
         margin_ok = True
-        if is_distant and len(scored_candidates) >= 3:
-            margin_ok = (best_score - second_best_score) >= 0.025
+        if len(scored_candidates) >= 2:
+            margin_ok = (best_score - second_best_score) >= 0.020
+        elif len(scored_candidates) == 1 and is_distant:
+            # Single-gallery distant match must be strictly confident (>= base_thresh)
+            # to avoid matching un-enrolled passersby when no 2nd candidate exists.
+            margin_ok = best_score >= base_thresh
 
         if best_score >= effective_thresh and margin_ok:
             best_name = best_person["name"]
@@ -1068,7 +1080,7 @@ class FaceService:
                         )
 
                     calibrated_conf = calibrate_arcface_confidence(
-                        max(0.0, best_score), threshold=(min_match_score * 0.72)
+                        max(0.0, best_score), threshold=min_match_score
                     )
                     if is_ambiguous:
                         calibrated_conf = min(calibrated_conf, 65.0)
@@ -1180,7 +1192,7 @@ class FaceService:
                     )
 
                 calibrated_conf = calibrate_arcface_confidence(
-                    max(0.0, best_score), threshold=(min_match_score * 0.72)
+                    max(0.0, best_score), threshold=min_match_score
                 )
                 best_is_suspect = is_known and bool(
                     next((p.get("is_suspect", False) for p in known_list if p["name"] == best_name), False)
@@ -1318,9 +1330,8 @@ class FaceService:
                         probe_quality=probe_quality,
                     )
 
-                effective_th = min_match_score * 0.72 if is_distant_crop else min_match_score
                 calibrated_conf = calibrate_arcface_confidence(
-                    max(0.0, best_score), threshold=effective_th
+                    max(0.0, best_score), threshold=min_match_score
                 )
                 if is_ambiguous:
                     calibrated_conf = min(calibrated_conf, 65.0)
@@ -1385,30 +1396,65 @@ class FaceService:
                 self._age_tracks()
             return []
 
-        # Exclusive 1-to-1 Identity Assignment:
-        claimed_identities = set()
-        for det in sorted(raw_detections, key=lambda d: d["match_score"], reverse=True):
-            if det["is_known"]:
-                if det["name"] not in claimed_identities:
-                    claimed_identities.add(det["name"])
-                else:
-                    det["is_known"] = False
-                    det["is_threat"] = False
-                    det["threat_level"] = "NONE"
-                    det["name"] = "Unknown"
-                    det["class_name"] = "Face: Unknown"
-                    det["calibrated_conf"] = calibrate_arcface_confidence(
-                        min(det["match_score"], min_match_score * 0.85),
-                        threshold=min_match_score,
-                    )
+        # Exclusive 1-to-1 Identity Assignment (pre-pass on raw detections):
+        raw_detections = self._enforce_one_to_one_identities(raw_detections, min_match_score)
 
         if not use_temporal_smoothing:
             self._log_events(raw_detections)
             return raw_detections
 
         smoothed_results = self._apply_temporal_smoothing(raw_detections, now, min_match_score)
+        # Final post-smoothing 1-to-1 conflict resolution guarantee
+        smoothed_results = self._enforce_one_to_one_identities(smoothed_results, min_match_score)
         self._log_events(smoothed_results)
         return smoothed_results
+
+    def _enforce_one_to_one_identities(
+        self,
+        detections: list[dict[str, Any]],
+        min_match_score: float,
+    ) -> list[dict[str, Any]]:
+        """
+        Enforce physical invariant: One unique identity cannot occupy multiple bodies in the same frame.
+        Sorts detections by highest match evidence (match_score, calibrated_conf).
+        Any subsequent detection claiming an already-claimed identity is demoted to 'Unknown'.
+        """
+        if not detections:
+            return detections
+
+        claimed_identities: set[str] = set()
+        # Sort so the highest-evidence detection claims the identity first
+        sorted_indices = sorted(
+            range(len(detections)),
+            key=lambda i: (
+                1 if detections[i].get("is_known") else 0,
+                float(detections[i].get("match_score", 0.0)),
+                float(detections[i].get("calibrated_conf", 0.0)),
+            ),
+            reverse=True,
+        )
+
+        for idx in sorted_indices:
+            det = detections[idx]
+            if det.get("is_known"):
+                name_key = str(det.get("name", "")).strip().lower()
+                if name_key and name_key != "unknown":
+                    if name_key not in claimed_identities:
+                        claimed_identities.add(name_key)
+                    else:
+                        # Conflict! Duplicate identity in same frame: demote secondary to Unknown
+                        det["is_known"] = False
+                        det["is_threat"] = False
+                        det["threat_level"] = "NONE"
+                        det["name"] = "Unknown"
+                        det["class_name"] = "Face: Unknown"
+                        det["category"] = "Unknown"
+                        det["calibrated_conf"] = calibrate_arcface_confidence(
+                            min(det.get("match_score", 0.0), min_match_score * 0.85),
+                            threshold=min_match_score,
+                        )
+
+        return detections
 
     def _apply_temporal_smoothing(
         self,
@@ -1453,6 +1499,7 @@ class FaceService:
                 track = self.tracks[best_tid]
                 track["bbox"] = det_box
                 track["last_seen"] = now
+                det["track_id"] = best_tid
 
                 track["history"].append({
                     "name": det["name"],
@@ -1464,7 +1511,20 @@ class FaceService:
                     track["history"].pop(0)
 
                 known_votes = [h for h in track["history"] if h["is_known"]]
-                if known_votes or det.get("is_known"):
+                total_votes = len(track["history"])
+
+                # Determine if identity should be stabilized:
+                # 1. If current detection is known, confirm if consistent with track
+                # 2. If current detection is unknown, only bridge momentary drops if track
+                #    has a solid majority of known votes (>= 3 votes and >= 50% ratio).
+                #    This prevents a single noisy false match from "poisoning" the track.
+                should_stabilize = False
+                if det.get("is_known"):
+                    should_stabilize = True
+                elif len(known_votes) >= 3 and (len(known_votes) / max(1, total_votes)) >= 0.50:
+                    should_stabilize = True
+
+                if should_stabilize and known_votes:
                     candidate_votes = list(known_votes)
                     if det.get("is_known") and not any(h["name"] == det["name"] for h in candidate_votes):
                         candidate_votes.append({
@@ -1495,6 +1555,7 @@ class FaceService:
             else:
                 tid = self.next_track_id
                 self.next_track_id += 1
+                det["track_id"] = tid
                 self.tracks[tid] = {
                     "bbox": det_box,
                     "history": [{
@@ -1507,6 +1568,19 @@ class FaceService:
                 }
 
             final_results.append(det)
+
+        # Enforce 1-to-1 identity exclusivity on final smoothed results
+        final_results = self._enforce_one_to_one_identities(final_results, min_match_score)
+
+        # Sync track history if any track's identity was revoked during conflict resolution
+        for det in final_results:
+            if not det.get("is_known"):
+                tid = det.get("track_id")
+                if tid is not None and tid in self.tracks and self.tracks[tid]["history"]:
+                    last_h = self.tracks[tid]["history"][-1]
+                    if last_h.get("is_known") and last_h.get("name") != "Unknown":
+                        last_h["is_known"] = False
+                        last_h["name"] = "Unknown"
 
         return final_results
 

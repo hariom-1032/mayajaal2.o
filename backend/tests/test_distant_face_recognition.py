@@ -111,10 +111,47 @@ def test_faces_scan_distant_endpoint():
     print("[PASS] POST /api/faces/scan with enable_distant_mode returned 200 OK.")
 
 
+def test_exclusive_one_to_one_resolution():
+    """Verify that two people in the same frame cannot both be identified as the same person."""
+    # Simulate two detected faces in the same frame both claiming "hariom"
+    # Person 1 has higher match evidence (63%), Person 2 has lower (54%)
+    det_person1 = {
+        "name": "hariom",
+        "is_known": True,
+        "match_score": 0.40,
+        "calibrated_conf": 63.0,
+        "bbox": [200.0, 100.0, 240.0, 150.0],
+    }
+    det_person2 = {
+        "name": "hariom",
+        "is_known": True,
+        "match_score": 0.35,
+        "calibrated_conf": 54.0,
+        "bbox": [400.0, 100.0, 440.0, 150.0],
+    }
+
+    # 1. Test direct enforcement method
+    resolved = face_service._enforce_one_to_one_identities([det_person1, det_person2], min_match_score=0.32)
+    assert len(resolved) == 2
+    assert resolved[0]["name"] == "hariom" and resolved[0]["is_known"] is True
+    assert resolved[1]["name"] == "Unknown" and resolved[1]["is_known"] is False
+
+    # 2. Test through temporal smoothing (ensure smoothing never resurrects duplicate identity)
+    face_service.tracks.clear()
+    import time
+    now = time.time()
+    smoothed = face_service._apply_temporal_smoothing([det_person1, det_person2], now=now, min_match_score=0.32)
+    known_names = [d["name"] for d in smoothed if d.get("is_known")]
+    assert known_names == ["hariom"], f"Expected exactly one 'hariom', got {known_names}"
+    print("[PASS] 1-to-1 identity conflict resolution prevents duplicate identity in same frame.")
+
+
 if __name__ == "__main__":
     print("--- Running Distant Facial Recognition Test Suite ---")
     test_enhance_aligned_face_distant()
     test_deduplicate_face_detections()
+    test_exclusive_one_to_one_resolution()
     test_person_guided_roi_and_distant_mode()
     test_faces_scan_distant_endpoint()
     print("ALL DISTANT FACIAL RECOGNITION TESTS PASSED!")
+
