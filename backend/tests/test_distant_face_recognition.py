@@ -149,9 +149,11 @@ def test_exclusive_one_to_one_resolution():
 
 def test_identity_stability_hysteresis():
     """
-    Verify that once an identity is confirmed on a track, momentary Unknown frames
-    do NOT cause visible flickering (the locked name is held through Unknown frames).
-    Only after identity_drop_tolerance consecutive Unknown frames should it release.
+    Verify the complete identity stability contract:
+    1. PRE-LOCK: even the very first Unknown frame after a confirmed frame is bridged
+    2. POST-LOCK: Unknown frames within drop_tolerance are bridged  
+    3. ALTERNATING: the real-world hariom/Unknown/hariom/Unknown pattern shows NO flicker
+    4. RELEASE: lock releases cleanly after sustained Unknown frames
     """
     import time
     import copy
@@ -166,7 +168,7 @@ def test_identity_stability_hysteresis():
             "is_known": is_known,
             "match_score": score,
             "calibrated_conf": calibrated,
-            "bbox": [200.0, 100.0, 250.0, 160.0],  # Same spatial location each frame
+            "bbox": [200.0, 100.0, 250.0, 160.0],
             "is_threat": False,
             "is_ambiguous": False,
             "confidence": 0.9,
@@ -178,42 +180,52 @@ def test_identity_stability_hysteresis():
             "category": "Authorized Personnel" if is_known else "Unknown",
         }
 
-    results_by_frame = []
+    # --- TEST 1: PRE-LOCK bridging (hariom on frame 1, Unknown on frame 2, before lock is established) ---
+    face_service.tracks.clear()
+    results = []
+    sequence = ["hariom", "Unknown", "hariom", "Unknown"]  # Alternating before lock
+    for i, label in enumerate(sequence):
+        is_known = label != "Unknown"
+        det = make_det(label, is_known, score=0.42 if is_known else 0.1, calibrated=68.0 if is_known else 15.0)
+        res = face_service._apply_temporal_smoothing([copy.deepcopy(det)], now=now + i * 0.1, min_match_score=min_score)
+        results.append(res[0]["name"] if res else "NO_RESULT")
 
-    # Frames 1-3: confirmed as "hariom" (lock should be set after frame 2)
-    for i in range(3):
+    print(f"  Alternating pattern results: {results}")
+    assert all(n == "hariom" for n in results), \
+        f"Alternating hariom/Unknown should always show 'hariom', got: {results}"
+    print("[PASS] Pre-lock bridge: alternating hariom/Unknown shows no flicker.")
+
+    # --- TEST 2: POST-LOCK bridging (multiple Unknown frames within tolerance) ---
+    face_service.tracks.clear()
+    results2 = []
+    for i in range(3):  # 3 confirmed frames
         det = make_det("hariom", True)
         res = face_service._apply_temporal_smoothing([copy.deepcopy(det)], now=now + i * 0.1, min_match_score=min_score)
-        results_by_frame.append(res[0]["name"] if res else "NO_RESULT")
+        results2.append(res[0]["name"] if res else "NO_RESULT")
 
-    # Frames 4-9: unknown frames (within drop tolerance of 6)
-    for i in range(3, 9):
+    for i in range(3, 3 + face_service.identity_drop_tolerance):  # Unknown within tolerance
         det = make_det("Unknown", False, score=0.1, calibrated=15.0)
         res = face_service._apply_temporal_smoothing([copy.deepcopy(det)], now=now + i * 0.1, min_match_score=min_score)
-        results_by_frame.append(res[0]["name"] if res else "NO_RESULT")
+        results2.append(res[0]["name"] if res else "NO_RESULT")
 
-    print(f"  Frame labels (3 known + 6 unknown): {results_by_frame}")
+    print(f"  Post-lock bridge ({face_service.identity_drop_tolerance} Unknown frames): {results2}")
+    # ALL frames within tolerance should show "hariom"
+    within_tol = results2[3: 3 + face_service.identity_drop_tolerance]
+    assert all(n == "hariom" for n in within_tol), \
+        f"Lock should hold 'hariom' within drop_tolerance, got: {within_tol}"
+    print(f"[PASS] Post-lock bridge: {face_service.identity_drop_tolerance} Unknown frames held as 'hariom'.")
 
-    # Frames 1-3 must be "hariom"
-    assert all(n == "hariom" for n in results_by_frame[:3]), \
-        f"Confirmed frames should be 'hariom': {results_by_frame[:3]}"
-
-    # Frames 4-9 must still be "hariom" (lock holds within tolerance)
-    bridged = results_by_frame[3:9]
-    assert all(n == "hariom" for n in bridged), \
-        f"Lock should hold 'hariom' through Unknown frames: {bridged}"
-
-    # Frame 10+: After exceeding drop tolerance, the lock should release
-    for i in range(9, 9 + face_service.identity_drop_tolerance + 2):
+    # --- TEST 3: LOCK RELEASE after sustained Unknown ---
+    for i in range(3 + face_service.identity_drop_tolerance,
+                   3 + face_service.identity_drop_tolerance + 5):  # Well beyond tolerance
         det = make_det("Unknown", False, score=0.1, calibrated=15.0)
         res = face_service._apply_temporal_smoothing([copy.deepcopy(det)], now=now + i * 0.1, min_match_score=min_score)
-        results_by_frame.append(res[0]["name"] if res else "NO_RESULT")
+        results2.append(res[0]["name"] if res else "NO_RESULT")
 
-    last_frames = results_by_frame[-3:]
+    last_frames = results2[-3:]
     assert any(n == "Unknown" for n in last_frames), \
-        f"After drop tolerance exceeded, identity should release to 'Unknown': {last_frames}"
-
-    print("[PASS] Identity hysteresis: locked name survives momentary Unknown frames, releases after sustained absence.")
+        f"After tolerance exceeded, lock should release to 'Unknown': {last_frames}"
+    print("[PASS] Lock release: identity releases cleanly after sustained absence.")
 
 
 if __name__ == "__main__":
@@ -225,4 +237,5 @@ if __name__ == "__main__":
     test_person_guided_roi_and_distant_mode()
     test_faces_scan_distant_endpoint()
     print("ALL DISTANT FACIAL RECOGNITION TESTS PASSED!")
+
 

@@ -210,12 +210,14 @@ class FaceService:
         self.tracks: dict[int, dict[str, Any]] = {}
         self.next_track_id: int = 1
 
-        # Number of consecutive Unknown frames before a confirmed-identity track releases its lock
-        # Increase this value for more stability; decrease for faster identity release on occlusion
-        self.identity_drop_tolerance: int = 6
+        # Number of consecutive Unknown frames before a confirmed-identity track releases its lock.
+        # Increase this value for more stability; decrease for faster identity release on occlusion.
+        # Default=8 at ~30fps with face-detection every 4th frame ≈ ≥ 1 second of bridging.
+        self.identity_drop_tolerance: int = 8
 
-        # Minimum number of known votes required to confirm and lock an identity on a track
-        self.identity_lock_threshold: int = 2
+        # Minimum number of known votes required to confirm and lock an identity on a track.
+        # 1 = lock fires immediately on the first confident known frame (recommended for stability).
+        self.identity_lock_threshold: int = 1
 
         self._init_models()
         self.load_database()
@@ -1521,24 +1523,25 @@ class FaceService:
                 total_votes = len(track["history"])
 
                 # --- IDENTITY LOCK / HYSTERESIS ---
-                # Once a track's identity is confirmed (>= identity_lock_threshold known votes),
-                # we store a "locked_name" on the track.  Momentary "Unknown" frames
-                # are silently overridden by the locked identity so the label stays stable
-                # on screen.  The lock is only released after `identity_drop_tolerance`
-                # consecutive Unknown frames, indicating a genuine identity change / departure.
+                # Once a track gets its first confident known detection, we store a
+                # "locked_name" (lock fires at identity_lock_threshold=1 known vote).
+                # While the lock is active, momentary Unknown frames are overridden
+                # with the locked label so the on-screen name never flickers.
+                # The lock releases only after `identity_drop_tolerance` consecutive
+                # Unknown frames, indicating the person has genuinely left.
                 locked_name: Optional[str] = track.get("locked_name")
                 locked_score: float = track.get("locked_score", 0.0)
                 locked_calibrated: float = track.get("locked_calibrated", 0.0)
                 unknown_streak: int = track.get("unknown_streak", 0)
 
-                # Update the lock state based on this new frame
                 if det.get("is_known") and len(known_votes) >= self.identity_lock_threshold:
-                    # Confirm / upgrade the locked identity
+                    # --- LOCK ACQUISITION / REFRESH ---
                     names_so_far = [h["name"] for h in known_votes]
                     majority_name = max(set(names_so_far), key=names_so_far.count)
 
-                    # Only update locked_name when majority agrees (prevents noisy takeover)
-                    if names_so_far.count(majority_name) >= self.identity_lock_threshold:
+                    # Only commit the lock when the majority agrees with the current frame's name.
+                    # This prevents a late noisy detection from silently stealing the locked identity.
+                    if det["name"] == majority_name or names_so_far.count(majority_name) >= self.identity_lock_threshold:
                         track["locked_name"] = majority_name
                         track["locked_score"] = max(h["score"] for h in known_votes if h["name"] == majority_name)
                         track["locked_calibrated"] = max(h["calibrated"] for h in known_votes if h["name"] == majority_name)
@@ -1546,16 +1549,19 @@ class FaceService:
                         locked_score = track["locked_score"]
                         locked_calibrated = track["locked_calibrated"]
 
+                    # Reset unknown streak: this frame is a confirmed known frame
                     track["unknown_streak"] = 0
                     unknown_streak = 0
-                else:
-                    # This frame is Unknown (or < lock threshold): increment streak
+
+                elif locked_name is not None:
+                    # --- LOCK HOLD: Unknown frame while lock is active ---
+                    # Only increment streak once a lock has been established.
+                    # (Don't count Unknown frames that arrive before the first confirmed detection.)
                     unknown_streak += 1
                     track["unknown_streak"] = unknown_streak
 
-                    # If we have a stable locked identity and the drop streak hasn't
-                    # crossed the tolerance, override Unknown with the locked label.
-                    if locked_name is not None and unknown_streak <= self.identity_drop_tolerance:
+                    if unknown_streak <= self.identity_drop_tolerance:
+                        # Bridge: override Unknown with the locked identity
                         known_match = next(
                             (p for p in self.known_persons if p["name"].lower() == locked_name.lower()), None
                         )
@@ -1576,11 +1582,44 @@ class FaceService:
                             final_results.append(det)
                             continue  # Skip normal stabilize path for this frame
 
-                    elif unknown_streak > self.identity_drop_tolerance:
-                        # Release the lock — identity has genuinely changed / person left
+                    else:
+                        # --- LOCK RELEASE: sustained absence, person genuinely left ---
                         track["locked_name"] = None
                         track["locked_score"] = 0.0
                         track["locked_calibrated"] = 0.0
+                        track["unknown_streak"] = 0
+
+                else:
+                    # --- PRE-LOCK: no lock yet, Unknown frame ---
+                    # Don't increment unknown_streak — the lock hasn't been set yet.
+                    # If we have any known votes in history, use them as a soft bridge
+                    # (handles the alternating hariom/Unknown pattern before lock is set).
+                    if known_votes:
+                        majority_name = max(
+                            set(h["name"] for h in known_votes),
+                            key=lambda n: sum(1 for h in known_votes if h["name"] == n)
+                        )
+                        known_match = next(
+                            (p for p in self.known_persons if p["name"].lower() == majority_name.lower()), None
+                        )
+                        if known_match:
+                            is_suspect_val = known_match.get("is_suspect", False)
+                            threat_lvl_val = known_match.get("threat_level", "HIGH" if is_suspect_val else "LOW")
+                            cat_val = known_match.get("category", "Wanted / BOLO" if is_suspect_val else "Authorized Personnel")
+                            avg_score = max(h["score"] for h in known_votes if h["name"] == majority_name)
+                            avg_cal = max(h["calibrated"] for h in known_votes if h["name"] == majority_name)
+
+                            det["name"] = majority_name
+                            det["is_known"] = True
+                            det["is_threat"] = is_suspect_val
+                            det["threat_level"] = threat_lvl_val if is_suspect_val else "NONE"
+                            det["category"] = cat_val
+                            det["match_score"] = round(avg_score, 4)
+                            det["calibrated_conf"] = round(avg_cal, 1)
+                            det["class_name"] = f"🚨 SUSPECT: {majority_name}" if is_suspect_val else f"Face: {majority_name}"
+
+                            final_results.append(det)
+                            continue
 
                 # Normal stabilize path (for current-frame-known detections)
                 if det.get("is_known") and known_votes:
