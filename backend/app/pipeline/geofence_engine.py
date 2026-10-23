@@ -375,84 +375,14 @@ class GeofenceEngine:
                 crop_x1, crop_y1 = 0, 0
                 ch, cw = crop.shape[:2]
 
-            # Relative coordinates in crop
-            bx1 = x1 - crop_x1
-            by1 = y1 - crop_y1
-            bx2 = x2 - crop_x1
-            by2 = y2 - crop_y1
-
-            # Tactical crimson red bounding box
-            color = (0, 0, 235)  # Crimson Red
-            cv2.rectangle(crop, (bx1, by1), (bx2, by2), color, 2)
-
-            # High-visibility corner brackets
-            clen = max(6, min(16, (bx2 - bx1) // 4, (by2 - by1) // 4))
-            bracket_color = (0, 220, 255)  # Bright amber/gold
-            cv2.line(crop, (bx1, by1), (bx1 + clen, by1), bracket_color, 3)
-            cv2.line(crop, (bx1, by1), (bx1, by1 + clen), bracket_color, 3)
-            cv2.line(crop, (bx2, by1), (bx2 - clen, by1), bracket_color, 3)
-            cv2.line(crop, (bx2, by1), (bx2, by1 + clen), bracket_color, 3)
-            cv2.line(crop, (bx1, by2), (bx1 + clen, by2), bracket_color, 3)
-            cv2.line(crop, (bx1, by2), (bx1, by2 - clen), bracket_color, 3)
-            cv2.line(crop, (bx2, by2), (bx2 - clen, by2), bracket_color, 3)
-            cv2.line(crop, (bx2, by2), (bx2, by2 - clen), bracket_color, 3)
-
-            # Ground-contact footpoint bullseye
-            fpx = (bx1 + bx2) // 2
-            fpy = by2
-            cv2.circle(crop, (fpx, fpy), 4, (0, 0, 255), -1)
-            cv2.circle(crop, (fpx, fpy), 9, (0, 255, 255), 2)
-            cv2.line(crop, (fpx - 14, fpy), (fpx + 14, fpy), (0, 255, 255), 1)
-            cv2.line(crop, (fpx, fpy - 14), (fpx, fpy + 14), (0, 255, 255), 1)
-
-            # Top label badge on intruder
-            label_str = f"🚨 INTRUDER #{track_id} | {barrier_name.upper()}"
-            (lw, lh), _ = cv2.getTextSize(label_str, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
-            pill_y1 = max(24, by1 - lh - 8)
-            pill_y2 = max(32, by1)
-            pill_w = min(cw - 4, bx1 + lw + 12)
-            cv2.rectangle(crop, (bx1, pill_y1), (pill_w, pill_y2), (0, 0, 210), -1)
-            cv2.rectangle(crop, (bx1, pill_y1), (pill_w, pill_y2), (255, 255, 255), 1)
-            cv2.putText(crop, label_str, (bx1 + 4, pill_y2 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
-
-            # Top forensic header bar
-            cv2.rectangle(crop, (0, 0), (cw, 22), (10, 15, 25), -1)
-            cv2.line(crop, (0, 22), (cw, 22), (0, 0, 220), 1)
-            cv2.circle(crop, (10, 11), 4, (0, 0, 255), -1)
-            cv2.putText(crop, "PERIMETER BREACH FORENSICS", (20, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (255, 255, 255), 1, cv2.LINE_AA)
-
-            # Picture-in-picture (PIP) scene overview inset in top-right
-            if cw >= 280 and ch >= 200:
-                pip_w = min(130, int(cw * 0.32))
-                pip_h = max(50, int(pip_w * (h / float(w))))
-                pip_img = cv2.resize(frame, (pip_w, pip_h))
-                prx1 = max(0, min(pip_w - 1, int((x1 / float(w)) * pip_w)))
-                pry1 = max(0, min(pip_h - 1, int((y1 / float(h)) * pip_h)))
-                prx2 = max(0, min(pip_w - 1, int((x2 / float(w)) * pip_w)))
-                pry2 = max(0, min(pip_h - 1, int((y2 / float(h)) * pip_h)))
-                cv2.rectangle(pip_img, (prx1, pry1), (prx2, pry2), (0, 0, 255), 1)
-                px = cw - pip_w - 4
-                py = 4
-                if py + pip_h < ch and px >= 0:
-                    crop[py:py+pip_h, px:px+pip_w] = pip_img
-                    cv2.rectangle(crop, (px, py), (px+pip_w, py+pip_h), (80, 100, 140), 1)
-                    cv2.putText(crop, "OVERVIEW", (px + 3, py + 9), cv2.FONT_HERSHEY_SIMPLEX, 0.26, (200, 220, 255), 1)
-
-            # Bottom telemetry bar
-            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            foot_norm = (round((x1 + x2) / (2.0 * w), 3), round(y2 / float(h), 3))
-            bot_text = f"CAM: {camera_id.upper()} • {now_time} • FP:{foot_norm}"
-            cv2.rectangle(crop, (0, ch - 20), (cw, ch), (10, 15, 25), -1)
-            cv2.line(crop, (0, ch - 20), (cw, ch - 20), (40, 60, 80), 1)
-            cv2.putText(crop, bot_text, (8, ch - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 220, 140), 1, cv2.LINE_AA)
-
+            # Save clean raw image without any bounding box or text overlays
             SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
             ts_str = int(time.time() * 1000)
             clean_cam = "".join(c for c in camera_id if c.isalnum() or c in "-_") or "cam"
             snap_filename = f"breach_{ts_str}_{clean_cam}_tr{track_id}.jpg"
             snap_path = SNAPSHOTS_DIR / snap_filename
-            cv2.imwrite(str(snap_path), crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
-            logger.info("Saved geofence breach forensics snapshot to %s", snap_path)
+            cv2.imwrite(str(snap_path), crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            logger.info("Saved geofence breach clean raw snapshot to %s", snap_path)
             return snap_filename
         except Exception as exc:
             logger.warning("Error creating breach snapshot: %s", exc)
@@ -525,6 +455,13 @@ class GeofenceEngine:
             prev_fp = cam_history.get(track_id)
             cam_history[track_id] = curr_fp
 
+            # Multi-point validation: ground footpoint, head anchor, and midpoint
+            eval_pts = [curr_fp]
+            head_pt = obj.get("head_point")
+            if head_pt and len(head_pt) == 2:
+                eval_pts.append((float(head_pt[0]), float(head_pt[1])))
+                eval_pts.append((float(curr_fp[0]), (float(curr_fp[1]) + float(head_pt[1])) / 2.0))
+
             # 1. Check Virtual Geofence Polygon Breaches
             for zone in active_zones:
                 target_classes = [c.lower() for c in zone.get("targetClasses", [])]
@@ -535,7 +472,7 @@ class GeofenceEngine:
                 if len(poly) < 3:
                     continue
 
-                if is_point_in_polygon(curr_fp[0], curr_fp[1], poly):
+                if any(is_point_in_polygon(pt[0], pt[1], poly) for pt in eval_pts):
                     # Capture forensic snapshot of intruder
                     snapshot_filename = None
                     if auto_alert or frame is not None:

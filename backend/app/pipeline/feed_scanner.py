@@ -629,15 +629,12 @@ class ContinuousFaceScanner:
                 cam_name, cam_id, suspect_name, threat_lvl, calibrated_conf,
             )
 
-            # Annotate frame snapshot
-            annotated_snapshot = face_service.draw_faces(infer_frame, [face])
-
-            # Save snapshot JPEG
+            # Save raw frame snapshot without bounding boxes or text
             ts_str = int(now_sec * 1000)
             snapshot_name = f"alert_{ts_str}_{cam_id}.jpg"
             snapshot_path = SNAPSHOTS_DIR / snapshot_name
             try:
-                cv2.imwrite(str(snapshot_path), annotated_snapshot)
+                cv2.imwrite(str(snapshot_path), infer_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
             except Exception as save_err:
                 logger.warning("Could not save snapshot file: %s", save_err)
                 snapshot_name = None

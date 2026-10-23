@@ -95,12 +95,31 @@ export default function GeofencesPage() {
     }
   }, [selectedCamId, activeCamera]);
 
+  // Session ID for stopping background live inference upon unmount
+  const sessionIdRef = useRef(
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2)
+  );
+
+  useEffect(() => {
+    const sid = sessionIdRef.current;
+    return () => {
+      fetch(
+        `/api/backend/stream/live/stop?session_id=${encodeURIComponent(sid)}`,
+        { method: "DELETE", keepalive: true }
+      ).catch(() => {});
+    };
+  }, []);
+
   // Live MJPEG RTSP Stream URL with explicit camera_id for real-time geofence evaluation
   const activeMjpegUrl = useMemo(() => {
     const params = new URLSearchParams({
       rtsp_url: rtspUrl || "sample",
       camera_id: selectedCamId,
       draw_detections: String(drawDetectionsOnStream),
+      enable_face_recognition: String(drawDetectionsOnStream),
+      session_id: sessionIdRef.current,
       fps: "25",
       _k: String(streamKey),
     });
