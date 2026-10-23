@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.alerts import router as alerts_router
-from app.api.anpr import router as anpr_router
 from app.api.auth import router as auth_router
 from app.api.cameras import router as cameras_router
 from app.api.faces import router as faces_router
@@ -23,7 +22,6 @@ from app.api.health import router as health_router
 from app.api.inference import router as inference_router
 from app.api.models import router as models_router
 from app.api.stream import router as stream_router
-from app.api.tracking import router as tracking_router
 from app.core.config import settings
 from app.utils.logging import get_logger, setup_logging
 
@@ -57,14 +55,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not stop ContinuousFaceScanner on shutdown: %s", exc)
 
-        # Clean up all active ByteTracker sessions
-        try:
-            from app.tracking.session_store import tracker_session_store
-            removed = tracker_session_store.reset_all()
-            if removed:
-                logger.info("Cleared %d ByteTracker session(s) on shutdown.", removed)
-        except Exception as exc:
-            logger.warning("Could not clear tracker sessions on shutdown: %s", exc)
+
 
 
 app = FastAPI(
@@ -137,8 +128,6 @@ app.include_router(cameras_router)
 app.include_router(models_router)
 app.include_router(inference_router)
 app.include_router(stream_router)
-app.include_router(tracking_router)
-app.include_router(anpr_router)
 app.include_router(faces_router)
 app.include_router(geofences_router)
 app.include_router(alerts_router)

@@ -5,8 +5,6 @@ Tests:
 2. Preprocessor batch stacking for B in [2, 3, 4, 5, 6]
 3. Postprocessor batch decoding (YOLOv8, End-to-End) across dynamic batches
 4. ONNXEngine & InferenceService batch forward pass (B=2, B=4, B=6)
-5. ANPRService detect_vehicles_batch (B=2, B=4, B=6)
-6. FastApi endpoint parameter checks for /api/inference/video, /api/inference/batch, /api/tracking/video
 """
 import sys
 import numpy as np
@@ -19,7 +17,6 @@ from app.core.config import settings
 from app.core.runtime import inference_service, model_manager
 from app.pipeline.preprocessor import Preprocessor, PreprocessingConfig
 from app.pipeline.postprocessor import Postprocessor, PostprocessorConfig
-from app.pipeline.anpr_service import anpr_pipeline
 
 def run_tests():
     total_tests = 0
@@ -134,43 +131,6 @@ def run_tests():
         print(f"   Batch size {b}: latency = {result.get('inference_time_ms')}ms ({round(result.get('inference_time_ms', 0) / b, 2)}ms/frame), output frames = {len(batch_dets)}")
 
     print("   [PASS] Live vehicle_detector.onnx batch inference succeeds for B=2, 4, 6")
-    passed_tests += 1
-
-    # -------------------------------------------------------------
-    # Test 5: ANPRService detect_vehicles_batch
-    # -------------------------------------------------------------
-    total_tests += 1
-    print("\n[Test 5] ANPRService detect_vehicles_batch (vehicle_detector.onnx)")
-    for b in [2, 4, 6]:
-        anpr_test_frames = [np.full((480, 640, 3), 120 + i * 15, dtype=np.uint8) for i in range(b)]
-        batch_veh = anpr_pipeline.detect_vehicles_batch(anpr_test_frames, conf_thresh=0.25)
-        assert len(batch_veh) == b, f"Expected {b} outputs, got {len(batch_veh)}"
-        print(f"   ANPR batch size {b}: vehicle detection returned {len(batch_veh)} frame detection lists")
-
-    print("   [PASS] ANPRService detect_vehicles_batch succeeds for B=2, 4, 6")
-    passed_tests += 1
-
-    # -------------------------------------------------------------
-    # Test 6: API endpoints parameter validation
-    # -------------------------------------------------------------
-    total_tests += 1
-    print("\n[Test 6] API Endpoints Signature & Form Field Verification")
-    import inspect
-    from app.api.inference import video_inference, rtsp_inference, batch_inference
-    from app.api.tracking import video_tracking
-
-    for fn_name, fn in [
-        ("video_inference", video_inference),
-        ("rtsp_inference", rtsp_inference),
-        ("batch_inference", batch_inference),
-        ("video_tracking", video_tracking),
-    ]:
-        sig = inspect.signature(fn)
-        assert "batch_size" in sig.parameters, f"Missing 'batch_size' parameter in {fn_name}"
-        param = sig.parameters["batch_size"]
-        print(f"   {fn_name}: found batch_size parameter (default={param.default})")
-
-    print("   [PASS] All API endpoints define batch_size parameter")
     passed_tests += 1
 
     print("\n" + "=" * 60)

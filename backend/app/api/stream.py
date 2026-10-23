@@ -464,7 +464,6 @@ def stream_generator(
     fps_limit: int = 24,
     rotation: int = 0,
     enable_face_recognition: bool = False,
-    enable_vehicle_detection: bool = False,
     camera_id: Optional[str] = None,
     camera_name: Optional[str] = None,
     stop_event: Optional[threading.Event] = None,
@@ -509,19 +508,11 @@ def stream_generator(
         except Exception as exc:
             logger.warning("Could not create preprocessor for live stream: %s", exc)
 
-    # Initialize ByteTracker for in-stream multi-object tracking
-    tracker = None
-    try:
-        from app.tracking.tracker import ByteTrackerWrapper
-        tracker = ByteTrackerWrapper()
-    except Exception as exc:
-        logger.warning("Could not initialize ByteTracker for stream: %s", exc)
-
     cached_detections: list[dict] = []
     cached_faces: list[dict] = []
-    cached_vehicles: list[dict] = []
-    seen_track_reid: dict[int, tuple[str, bool, float]] = {}  # Cache local_track_id -> Re-ID
     recent_track_breaches: dict[int, tuple[str, str, float]] = {}  # track_id -> (name, type, timestamp)
+    face_id_track_map: dict[str, int] = {}  # face identity -> stable synthetic track_id for geofence
+    _face_id_counter: list[int] = [0]  # mutable counter via list
     active_breach_name: Optional[str] = None
     active_breach_time: float = 0.0
     frame_count = 0
@@ -603,104 +594,10 @@ def stream_generator(
 
             # ── Staggered AI Pipeline (Zero-Stutter Cadence) ─────────────────────
             # Frame cadence across every 4 frames:
-            #   Frame % 4 == 0 -> YOLO Threat Detection (~6 ms) + cached Re-ID
+            #   Frame % 4 == 0 -> (reserved - threat detection removed)
             #   Frame % 4 == 1 -> Fast pass-through (~5 ms)
             #   Frame % 4 == 2 -> Biometric Face Detection (~35 ms)
             #   Frame % 4 == 3 -> Fast pass-through (~5 ms)
-            # This guarantees every individual frame executes in <40ms, achieving 20+ FPS!
-
-            # Stage 1: Threat Detection (YOLO + ByteTrack)
-            if preprocessor and model_manager.is_loaded(model_name):
-                if frame_count % 4 == 0:
-                    try:
-                        tensor = preprocessor.process(frame)
-                        h, w = frame.shape[:2]
-                        res = inference_service.predict(
-                            model_name=model_name,
-                            input_data=tensor,
-                            postprocess=True,
-                            conf_threshold=conf_threshold,
-                            iou_threshold=0.45,
-                            original_image_size=(w, h),
-                        )
-                        raw_dets = res.get("detections", [])
-                        if tracker is not None:
-                            try:
-                                tracked = tracker.update(raw_dets, frame_resolution=(w, h))
-                                tracked_dets = [t.to_dict() for t in tracked]
-                                try:
-                                    from app.tracking.global_tracker import global_trace_manager
-                                    for det in tracked_dets:
-                                        c_name = str(det.get("class_name", "")).lower()
-                                        t_id = det.get("track_id")
-                                        if (c_name in ("person", "human", "pedestrian") or det.get("class_id") == 0) and t_id is not None:
-                                            # Throttled Re-ID: Only extract heavy OSNet feature on new tracks
-                                            if t_id not in seen_track_reid:
-                                                gtid, is_cross, reid_sc = global_trace_manager.update_track(
-                                                    camera_id=effective_cam_id,
-                                                    camera_name=effective_cam_name,
-                                                    local_track_id=t_id,
-                                                    box=det.get("box", []),
-                                                    frame_bgr=frame,
-                                                    confidence=float(det.get("confidence", 0.75)),
-                                                )
-                                                seen_track_reid[t_id] = (gtid, is_cross, reid_sc)
-                                            else:
-                                                gtid, is_cross, reid_sc = seen_track_reid[t_id]
-
-                                            det["global_trace_id"] = gtid
-                                            det["is_cross_camera"] = is_cross
-                                            det["reid_score"] = reid_sc
-                                            gt = global_trace_manager.get_trace(gtid)
-                                            if gt and gt.is_suspect:
-                                                det["is_threat"] = True
-                                                det["threat_level"] = gt.threat_level or "HIGH"
-                                                det["suspect_name"] = gt.suspect_name
-                                                det["category"] = gt.category
-                                                det["biometric_locked"] = gt.biometric_locked
-                                except Exception as g_err:
-                                    logger.debug("Global Re-ID update skip: %s", g_err)
-                                # ── Geofence & Directional Tripwire Real-Time Breach Evaluation ──
-                                try:
-                                    from app.pipeline.geofence_engine import geofence_engine
-                                    breaches = geofence_engine.evaluate_tracks(
-                                        camera_id=effective_cam_id,
-                                        tracked_objects=tracked_dets,
-                                        frame_resolution=(w, h),
-                                        auto_alert=True,
-                                        frame=frame,
-                                        camera_name=effective_cam_name,
-                                    )
-                                    now_t = time.time()
-                                    if breaches:
-                                        for b in breaches:
-                                            bid = b.get("trackId")
-                                            if bid is not None:
-                                                b_name = b.get("name", "PERIMETER")
-                                                b_type = b.get("type", "zone_breach")
-                                                recent_track_breaches[bid] = (b_name, b_type, now_t)
-                                                active_breach_name = b_name
-                                                active_breach_time = now_t
-
-                                    # Apply active or recent breach visual highlights (persists 3.5s)
-                                    for d in tracked_dets:
-                                        tid = d.get("track_id")
-                                        if tid in recent_track_breaches:
-                                            b_name, b_type, b_time = recent_track_breaches[tid]
-                                            if now_t - b_time < 3.5:
-                                                d["is_breach"] = True
-                                                d["breach_label"] = b_name
-                                                d["breach_type"] = b_type
-                                except Exception as geo_err:
-                                    logger.debug("Geofence live stream evaluation skip: %s", geo_err)
-
-                                cached_detections = tracked_dets
-                            except Exception:
-                                cached_detections = raw_dets
-                        else:
-                            cached_detections = raw_dets
-                    except Exception as exc:
-                        logger.debug("In-stream inference skip: %s", exc)
 
             # Stage 2: Biometric Facial Recognition (with Distant Person-RoI & Multi-Scale Scanning)
             if enable_face_recognition:
@@ -770,22 +667,65 @@ def stream_generator(
                     except Exception as exc:
                         logger.debug("Live stream face recognition exception: %s", exc)
 
-            # Stage 3: Vehicle Detection (YOLOv8s vehicle_detector.onnx)
-            if enable_vehicle_detection:
-                if frame_count % 4 == 1 or not cached_vehicles:
-                    try:
-                        from app.pipeline.anpr_service import anpr_pipeline
-                        cached_vehicles = anpr_pipeline.detect_vehicles(frame, conf_thresh=0.35)
-                    except Exception as exc:
-                        logger.debug("Live stream vehicle detection exception: %s", exc)
-
-            # Draw AI Threat Boxes (from cached detections) only if requested
-            if draw_detections and cached_detections:
-                draw_bounding_boxes(frame, cached_detections)
-
-            # Draw Vehicle Detection Overlays (from cached vehicles)
-            if enable_vehicle_detection and cached_vehicles:
-                draw_bounding_boxes(frame, cached_vehicles)
+            # Stage 3: Geofence & Directional Tripwire Evaluation (face-based)
+            # Runs on every face-recognition frame (frame_count % 4 == 2) or when faces change.
+            # Uses cached_faces converted to geofence-compatible objects with stable synthetic track IDs.
+            if cached_faces:
+                try:
+                    from app.pipeline.geofence_engine import geofence_engine
+                    h_fr, w_fr = frame.shape[:2]
+                    geofence_objects: list[dict] = []
+                    for fc in cached_faces:
+                        fc_box = fc.get("bbox") or fc.get("box")
+                        if not fc_box or len(fc_box) < 4:
+                            continue
+                        # Build a stable synthetic track_id keyed on face identity/id string
+                        face_key = str(fc.get("id") or fc.get("name") or fc.get("face_id") or str(fc_box))
+                        if face_key not in face_id_track_map:
+                            _face_id_counter[0] += 1
+                            face_id_track_map[face_key] = _face_id_counter[0]
+                        synthetic_tid = face_id_track_map[face_key]
+                        f_name = fc.get("name", "Unknown")
+                        is_th = bool(fc.get("is_threat", False))
+                        geofence_objects.append({
+                            "box": fc_box,
+                            "track_id": synthetic_tid,
+                            "class_name": "suspect" if is_th else "person",
+                            "confidence": float(fc.get("calibrated_conf") or fc.get("match_score") or fc.get("confidence") or 0.85),
+                            "suspect_name": f_name if f_name != "Unknown" else None,
+                        })
+                    if geofence_objects:
+                        breaches = geofence_engine.evaluate_tracks(
+                            camera_id=effective_cam_id,
+                            tracked_objects=geofence_objects,
+                            frame_resolution=(w_fr, h_fr),
+                            auto_alert=True,
+                            frame=frame,
+                            camera_name=effective_cam_name,
+                        )
+                        now_t = time.time()
+                        if breaches:
+                            for b in breaches:
+                                bid = b.get("trackId")
+                                if bid is not None:
+                                    b_name = b.get("name", "PERIMETER")
+                                    b_type = b.get("type", "zone_breach")
+                                    recent_track_breaches[bid] = (b_name, b_type, now_t)
+                                    active_breach_name = b_name
+                                    active_breach_time = now_t
+                        # Apply breach highlights to matching faces in cached_detections
+                        for geo_obj in geofence_objects:
+                            tid = geo_obj["track_id"]
+                            if tid in recent_track_breaches:
+                                b_name, b_type, b_time = recent_track_breaches[tid]
+                                if now_t - b_time < 3.5:
+                                    for d in cached_detections:
+                                        if d.get("track_id") == tid:
+                                            d["is_breach"] = True
+                                            d["breach_label"] = b_name
+                                            d["breach_type"] = b_type
+                except Exception as geo_err:
+                    logger.debug("Geofence face-based evaluation skip: %s", geo_err)
 
             # Draw Biometric Face Overlays (from cached faces)
             if enable_face_recognition and cached_faces:
@@ -795,7 +735,7 @@ def stream_generator(
                 except Exception as draw_exc:
                     logger.debug("Live stream face draw exception: %s", draw_exc)
 
-            total_det_count = len(cached_detections) + (len(cached_vehicles) if enable_vehicle_detection else 0)
+            total_det_count = len(cached_detections)
             draw_tactical_hud(
                 frame,
                 rtsp_url=resolved_url,
@@ -862,19 +802,7 @@ def stream_generator(
                                     "category": cat,
                                 })
 
-                if enable_vehicle_detection and cached_vehicles:
-                    for v in cached_vehicles:
-                        v_box = v.get("box", [])
-                        if len(v_box) >= 4:
-                            formatted_dets.append({
-                                "box": [int(v_val) for v_val in v_box],
-                                "class_id": v.get("class_id", 888),
-                                "class_name": v.get("class_name", "vehicle"),
-                                "confidence": round(float(v.get("confidence", 0.0)), 3),
-                                "track_id": v.get("track_id"),
-                                "is_threat": False,
-                                "category": "Transport / Vehicle",
-                            })
+
 
                 _live_session_detections[session_id] = {
                     "session_id": session_id,
@@ -1045,10 +973,6 @@ def get_live_stream(
         False,
         description="Overlay real-time facial recognition and identity labels",
     ),
-    enable_vehicle_detection: bool = Query(
-        False,
-        description="Overlay real-time vehicle detection boxes and labels",
-    ),
     camera_id: Optional[str] = Query(
         None,
         description="Optional camera UUID / ID for multi-camera Re-ID tracking",
@@ -1079,7 +1003,6 @@ def get_live_stream(
                 model_name=model_name,
                 fps_limit=fps,
                 enable_face_recognition=enable_face_recognition,
-                enable_vehicle_detection=enable_vehicle_detection,
                 camera_id=camera_id,
                 camera_name=camera_name,
                 stop_event=stop_event,
