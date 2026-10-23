@@ -11,7 +11,7 @@ from app.pipeline.face_service import face_service
 
 
 def test_facemesh_enrollment_pipeline():
-    """Verify FaceMesh V2_478 is active and gates face enrollment with sub-pixel landmarks."""
+    """Verify FaceMesh V2_478 gates face enrollment with sub-pixel landmarks and quarter profile support."""
     # 1. Engine check
     assert face_service.is_ready, "FaceService must be operational"
     assert face_service.mesher is not None, "FaceMesh V2_478 must be initialized"
@@ -24,16 +24,16 @@ def test_facemesh_enrollment_pipeline():
     img = cv2.imread(str(test_thumb))
     assert img is not None and img.size > 0, "Image must be loaded successfully"
 
-    test_person_name = "__Gravitas_Mesh_Test_User__"
+    test_person_name = "__Gravitas_Mesh_SideView_Test__"
 
-    # Register face
+    # Register face (Primary sample)
     reg_result = face_service.register_face(
         image_bgr=img,
         name=test_person_name,
         is_suspect=False,
         threat_level="LOW",
         category="Authorized Personnel",
-        notes="Automated Gravitas FaceMesh verification enrollment",
+        notes="Automated Gravitas FaceMesh side-view verification",
     )
 
     print("Registration Result:", reg_result)
@@ -44,23 +44,31 @@ def test_facemesh_enrollment_pipeline():
     assert "presence_score" in metrics, "Presence score must be in metrics"
     assert metrics["presence_score"] >= 0.70, f"Presence score too low: {metrics['presence_score']}"
     assert "ear_left" in metrics and "ear_right" in metrics, "EAR metrics must be present"
-    assert metrics["ear_left"] >= 0.18 and metrics["ear_right"] >= 0.18, "Eyes must be open"
+    assert metrics["ear_left"] >= 0.15 and metrics["ear_right"] >= 0.15, "Both eyes must be visible"
     assert "yaw_deg" in metrics and "pitch_deg" in metrics and "roll_deg" in metrics, "3D pose angles must be present"
-    assert abs(metrics["yaw_deg"]) <= 16.0, f"Yaw out of bounds: {metrics['yaw_deg']}"
-    assert abs(metrics["pitch_deg"]) <= 16.0, f"Pitch out of bounds: {metrics['pitch_deg']}"
-    assert abs(metrics["roll_deg"]) <= 16.0, f"Roll out of bounds: {metrics['roll_deg']}"
+    assert abs(metrics["yaw_deg"]) <= 35.0, f"Yaw exceeded quarter profile limit: {metrics['yaw_deg']}"
+    assert abs(metrics["pitch_deg"]) <= 18.0, f"Pitch out of bounds: {metrics['pitch_deg']}"
+    assert abs(metrics["roll_deg"]) <= 18.0, f"Roll out of bounds: {metrics['roll_deg']}"
     assert "mar" in metrics and metrics["mar"] <= 0.42, f"Mouth expression not neutral: {metrics['mar']}"
+    assert "pose_type" in metrics and metrics["pose_type"] in ["FRONTAL", "QUARTER_PROFILE_LEFT", "QUARTER_PROFILE_RIGHT"], f"Invalid pose_type: {metrics.get('pose_type')}"
 
-    print(f"[PASS] FaceMesh enrollment successfully verified with metrics: {metrics}")
+    print(f"[PASS] FaceMesh enrollment successfully verified with pose_type '{metrics['pose_type']}': {metrics}")
 
-    # 3. Clean up test user
+    # 3. Test adding an additional angle sample to the existing profile
     person_id = reg_result["person_id"]
+    add_res = face_service.add_sample(person_id, img)
+    assert add_res.get("success") is True, f"add_sample failed: {add_res.get('error')}"
+    assert add_res.get("is_new") is False, "Sample added to existing person must have is_new=False"
+    assert add_res.get("sample_count") > reg_result.get("sample_count"), "Sample count must increase"
+    print(f"[PASS] Successfully added secondary angle sample to profile ({add_res['sample_count']} samples total)")
+
+    # 4. Clean up test user
     del_result = face_service.delete_person(person_id)
     assert del_result.get("success") is True, "Failed to clean up test user"
     print(f"[PASS] Cleaned up temporary test person ID: {person_id}")
 
 
 if __name__ == "__main__":
-    print("Running FaceMesh Enrollment Integration Tests...")
+    print("Running FaceMesh Side-View & Enrollment Integration Tests...")
     test_facemesh_enrollment_pipeline()
     print("ALL FACEMESH ENROLLMENT TESTS PASSED!")

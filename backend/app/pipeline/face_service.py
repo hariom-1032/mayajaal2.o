@@ -866,22 +866,39 @@ class FaceService:
                                          "Please keep a relaxed, neutral expression during enrollment.",
                             }
 
-                        # Check 3: True 3D Head Pose Angles
+                        # Check 3: True 3D Head Pose Angles (Allows Quarter Profiles up to 35° Yaw)
                         roll_deg, yaw_deg, pitch_deg = compute_3d_head_pose_angles(lms_3d)
-                        if abs(roll_deg) > 16.0:
+
+                        if abs(roll_deg) > 18.0:
                             return {
                                 "success": False,
                                 "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment.",
                             }
-                        if abs(yaw_deg) > 16.0:
+
+                        if abs(pitch_deg) > 18.0:
                             return {
                                 "success": False,
-                                "error": f"Face is turned at an angle (Yaw: {int(yaw_deg)}°). Please face the camera directly.",
+                                "error": f"Head is tilted up or down (Pitch: {int(pitch_deg)}°). Maximum allowed tilt is 18°. Please look towards the camera.",
                             }
-                        if abs(pitch_deg) > 16.0:
+
+                        # Pose classification: Frontal (<= 18°) vs Quarter Profile (18° - 35°) vs Extreme Profile (> 35°)
+                        if abs(yaw_deg) <= 18.0:
+                            pose_type = "FRONTAL"
+                        elif abs(yaw_deg) <= 35.0:
+                            pose_type = "QUARTER_PROFILE_RIGHT" if yaw_deg > 0 else "QUARTER_PROFILE_LEFT"
+                            # Ensure both eyes remain visible for quarter profile alignment
+                            if ear_left < 0.15 or ear_right < 0.15:
+                                return {
+                                    "success": False,
+                                    "error": "One eye is partially occluded by the head angle. "
+                                             "Please turn slightly more towards the camera so both eyes are clearly visible.",
+                                }
+                        else:
                             return {
                                 "success": False,
-                                "error": f"Head is tilted up or down (Pitch: {int(pitch_deg)}°). Please look straight at the camera.",
+                                "error": f"Face angle is too steep (Yaw: {int(abs(yaw_deg))}°). "
+                                         f"Maximum supported angle is 35° (Quarter Profile). "
+                                         f"Please face more towards the camera so both eyes are visible.",
                             }
 
                         # Check 4: Extract sub-pixel canonical 5-point alignment keypoints from pupil centers
@@ -889,6 +906,7 @@ class FaceService:
                         mesh_verified = True
                         mesh_metrics = {
                             "presence_score": round(presence_score, 3),
+                            "pose_type": pose_type,
                             "yaw_deg": round(yaw_deg, 1),
                             "pitch_deg": round(pitch_deg, 1),
                             "roll_deg": round(roll_deg, 1),
@@ -915,16 +933,16 @@ class FaceService:
                         if roll_deg > 18.0:
                             return {
                                 "success": False,
-                                "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment for optimal recognition accuracy.",
+                                "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment.",
                             }
-                        # Check Yaw
+                        # Check Yaw (allows quarter profile in 2D)
                         dist_l = float(np.linalg.norm(nose - left_eye))
                         dist_r = float(np.linalg.norm(nose - right_eye))
                         yaw_ratio = dist_l / max(dist_r, 1e-4)
-                        if yaw_ratio < 0.40 or yaw_ratio > 2.50:
+                        if yaw_ratio < 0.25 or yaw_ratio > 4.0:
                             return {
                                 "success": False,
-                                "error": "Face is turned at an angle. Please look directly into the camera during enrollment for optimal recognition accuracy.",
+                                "error": "Face angle is too steep. Please look more towards the camera.",
                             }
                         # Check Pitch
                         left_mouth, right_mouth = lms[3], lms[4]
@@ -933,10 +951,10 @@ class FaceService:
                         eye_to_nose = float(np.linalg.norm(nose - eye_center))
                         nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
                         pitch_ratio = eye_to_nose / max(nose_to_mouth, 1e-4)
-                        if pitch_ratio < 0.35 or pitch_ratio > 3.0:
+                        if pitch_ratio < 0.30 or pitch_ratio > 3.3:
                             return {
                                 "success": False,
-                                "error": "Head is tilted up or down. Please look straight at the camera during enrollment for optimal recognition accuracy.",
+                                "error": "Head is tilted up or down. Please look straight at the camera during enrollment.",
                             }
 
             # Extract 512-D TTA embedding using sub-pixel pupil-aligned canonical keypoints
@@ -990,13 +1008,14 @@ class FaceService:
                     # Back-fill neutral quality weights for legacy samples
                     existing["quality_weights"] = [0.5] * len(existing["features"])
 
-                # Primary TTA embedding gets the actual quality score;
-                # synthetic distance anchors get a lower weight (0.4) since
-                # they are artificial downscaled versions
-                sample_qualities = [enrollment_quality] + [0.4] * (len(features_to_store) - 1)
+                # Side views (yaw > 18°) get a calibrated weight (0.55) so they
+                # serve as dedicated angled matching targets without distorting the primary frontal centroid anchor
+                is_side_view = abs(mesh_metrics.get("yaw_deg", 0.0)) > 18.0
+                primary_weight = enrollment_quality * (0.55 if is_side_view else 1.0)
+                sample_qualities = [primary_weight] + [0.35] * (len(features_to_store) - 1)
 
                 for i, f_add in enumerate(features_to_store):
-                    q_w = sample_qualities[i] if i < len(sample_qualities) else 0.4
+                    q_w = sample_qualities[i] if i < len(sample_qualities) else 0.35
                     if len(existing["features"]) < 10:
                         existing["features"].append(f_add)
                         existing["quality_weights"].append(q_w)
@@ -1014,6 +1033,7 @@ class FaceService:
                     existing["features"], quality_weights=existing.get("quality_weights")
                 )
                 self._save_database()
+                pose_desc = f", {mesh_metrics['pose_type']}" if mesh_metrics.get("pose_type") and mesh_metrics["pose_type"] != "FRONTAL" else ""
                 return {
                     "success": True,
                     "person_id": existing["id"],
@@ -1027,7 +1047,7 @@ class FaceService:
                     "enrollment_quality": round(enrollment_quality, 3),
                     "mesh_verified": mesh_verified,
                     "mesh_metrics": mesh_metrics,
-                    "message": f"Added samples to {name} ({len(existing['features'])} total, 512-D, quality={enrollment_quality:.0%}).",
+                    "message": f"Added samples to {name} ({len(existing['features'])} total, 512-D{pose_desc}, quality={enrollment_quality:.0%}).",
                 }
 
             person_id = f"person_{int(time.time())}_{uuid.uuid4().hex[:6]}"
@@ -1052,6 +1072,7 @@ class FaceService:
                 quality_weights=[enrollment_quality] + [0.4] * (len(features_to_store) - 1),
             )
 
+            pose_desc = f", {mesh_metrics['pose_type']}" if mesh_metrics.get("pose_type") and mesh_metrics["pose_type"] != "FRONTAL" else ""
             new_record = {
                 "id": person_id,
                 "name": name,
@@ -1065,12 +1086,13 @@ class FaceService:
                 "threat_level": str(threat_level).upper(),
                 "category": str(category).strip() or ("Wanted / BOLO" if is_suspect else "Authorized Personnel"),
                 "notes": str(notes).strip(),
+                "pose_type": mesh_metrics.get("pose_type", "FRONTAL"),
             }
             self.known_persons.append(new_record)
             self._save_database()
 
             mesh_str = " + FaceMesh 3D" if mesh_verified else ""
-            logger.info("Enrolled %s (ID: %s, 512-D UniFace%s, quality=%.2f).", name, person_id, mesh_str, enrollment_quality)
+            logger.info("Enrolled %s (ID: %s, 512-D UniFace%s%s, quality=%.2f).", name, person_id, mesh_str, pose_desc, enrollment_quality)
             return {
                 "success": True,
                 "person_id": person_id,
@@ -1084,7 +1106,7 @@ class FaceService:
                 "enrollment_quality": round(enrollment_quality, 3),
                 "mesh_verified": mesh_verified,
                 "mesh_metrics": mesh_metrics,
-                "message": f"Successfully enrolled {name} (512-D UniFace{mesh_str}, quality={enrollment_quality:.0%}).",
+                "message": f"Successfully enrolled {name} (512-D UniFace{mesh_str}{pose_desc}, quality={enrollment_quality:.0%}).",
             }
 
     def add_sample(
