@@ -65,3 +65,7 @@ bin/
 
 # Graphify Outputs
 graphify-out/
+
+# Agent Skills & Config
+.agents/skills/
+skills-lock.json
