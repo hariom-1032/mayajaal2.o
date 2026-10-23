@@ -132,6 +132,7 @@ function AlertsContent() {
           </div>
 
           <button
+            type="button"
             onClick={() => refresh()}
             className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
             title="Refresh Alerts"
@@ -139,6 +140,7 @@ function AlertsContent() {
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
+            type="button"
             onClick={() => {
               if (confirm("Are you sure you want to clear all incident records from browser storage?")) {
                 clearAll();
@@ -174,8 +176,9 @@ function AlertsContent() {
           {(["All", "Suspects", "High", "Medium", "Low"] as const).map((sev) => (
             <button
               key={sev}
+              type="button"
               onClick={() => setSeverityFilter(sev)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                 severityFilter === sev
                   ? sev === "Suspects"
                     ? "bg-rose-700 text-white shadow-xs font-bold"
@@ -195,8 +198,9 @@ function AlertsContent() {
           {(["All", "Pending", "Acknowledged"] as const).map((st) => (
             <button
               key={st}
+              type="button"
               onClick={() => setStatusFilter(st)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                 statusFilter === st
                   ? "bg-slate-800 text-white"
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -398,6 +402,7 @@ function AlertsContent() {
                     )}
                     {!alert.acknowledged ? (
                       <button
+                        type="button"
                         onClick={() => acknowledgeAlert(alert.id)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white shadow-xs transition-colors cursor-pointer"
                       >

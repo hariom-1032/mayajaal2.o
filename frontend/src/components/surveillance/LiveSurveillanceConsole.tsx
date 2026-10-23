@@ -15,7 +15,6 @@ import {
   X,
   Plus,
   ScanFace,
-  Car,
   Download,
   Shield,
   Layers,
@@ -31,14 +30,13 @@ function buildStreamUrl(
   rtspUrl: string,
   drawDetections: boolean,
   enableFaceBiometrics: boolean,
-  enableVehicleDetector: boolean,
   sessionId?: string
 ): string {
   const params = new URLSearchParams({
     rtsp_url: rtspUrl,
     draw_detections: String(drawDetections),
     enable_face_recognition: String(enableFaceBiometrics),
-    enable_vehicle_detection: String(enableVehicleDetector),
+    enable_vehicle_detection: "false",
     fps: "20",
     _t: String(Date.now()),
   });
@@ -62,7 +60,6 @@ export function LiveSurveillanceConsole() {
   // AI & Stream mode toggles
   const [aiMode, setAiMode] = useState<"raw" | "inference">("inference");
   const [enableFaceBiometrics, setEnableFaceBiometrics] = useState(true);
-  const [enableVehicleDetector, setEnableVehicleDetector] = useState(true);
 
   // Manual RTSP toggle & input
   const [showManualRtsp, setShowManualRtsp] = useState(false);
@@ -144,7 +141,6 @@ export function LiveSurveillanceConsole() {
         targetUrl,
         drawDetections,
         enableFaceBiometrics,
-        enableVehicleDetector,
         sessionIdRef.current
       );
       setRtspUrl(targetUrl);
@@ -155,7 +151,7 @@ export function LiveSurveillanceConsole() {
       setStreamKey((k) => k + 1);
       setStatusMessage(camName ? `Viewing: ${camName}` : "Connected to stream");
     },
-    [aiMode, enableFaceBiometrics, enableVehicleDetector]
+    [aiMode, enableFaceBiometrics]
   );
 
   // Switch camera selection
@@ -181,14 +177,13 @@ export function LiveSurveillanceConsole() {
         rtspUrl,
         drawDetections,
         enableFaceBiometrics,
-        enableVehicleDetector,
         sessionIdRef.current
       );
       setActiveMjpegSrc(src);
       setStreamKey((k) => k + 1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiMode, enableFaceBiometrics, enableVehicleDetector]);
+  }, [aiMode, enableFaceBiometrics]);
 
   // Restart / Reconnect active stream
   const handleRestartStream = useCallback(() => {
@@ -295,9 +290,72 @@ export function LiveSurveillanceConsole() {
 
   return (
     <div className="space-y-3 font-sans">
-      {/* ═══ 1. QUICK-SWITCH CAMERA RIBBON ═══ */}
-      <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-2">
-        <div className="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-none flex-1">
+      {/* ═══ 1. QUICK-SWITCH CAMERA BUTTON GRID ═══ */}
+      <div className="bg-white/80 backdrop-blur-xs border border-slate-200/90 rounded-xl p-2.5 space-y-2 shadow-2xs">
+        {/* Header Bar */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="px-2 py-0.5 rounded-md bg-emerald-100/90 border border-emerald-200/80 text-emerald-900 text-[11px] font-mono font-bold tracking-tight">
+              CHANNELS ({sortedCameras.length})
+            </span>
+            {selectedCamera ? (
+              <span className="text-xs text-slate-600 truncate">
+                Active:{" "}
+                <strong className="text-slate-900 font-bold font-mono">
+                  [CH {String(selectedCamera.channel ?? 0).padStart(2, "0")}]
+                </strong>{" "}
+                <span className="font-semibold text-slate-800">{selectedCamera.name}</span>
+              </span>
+            ) : (
+              <span className="text-xs text-slate-500 italic">Select a channel to view live feed</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="hidden md:inline text-[11px] text-slate-500 font-mono">
+              Press keys <kbd className="px-1 py-0.5 bg-slate-50 border border-slate-200 rounded text-slate-700 font-bold shadow-2xs">1-0</kbd> to switch
+            </span>
+
+            <button
+              type="button"
+              onClick={() => setShowAddCamera(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-dashed border-slate-300 bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-500 hover:bg-emerald-50/50 transition-colors cursor-pointer shadow-2xs"
+              title="Add New Channel"
+            >
+              <Plus className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Add Channel</span>
+            </button>
+
+            {/* View toggle */}
+            <div className="flex items-center gap-0.5 border border-slate-200 rounded-lg p-0.5 bg-slate-50 shadow-2xs">
+              <button
+                type="button"
+                onClick={() => setViewMode("compact")}
+                className={`px-2.5 py-1 text-[11px] rounded-md cursor-pointer transition-colors ${
+                  viewMode === "compact"
+                    ? "bg-white text-slate-900 font-bold shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900 font-medium"
+                }`}
+              >
+                Feed
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("grid")}
+                className={`px-2.5 py-1 text-[11px] rounded-md cursor-pointer transition-colors ${
+                  viewMode === "grid"
+                    ? "bg-white text-slate-900 font-bold shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900 font-medium"
+                }`}
+              >
+                Matrix
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Responsive Zero-Scroll Camera Button Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 xl:grid-cols-10 gap-1.5">
           {sortedCameras.map((cam) => {
             const isSelected = selectedCamera?.id === cam.id;
             const ch = cam.channel ?? 0;
@@ -308,84 +366,58 @@ export function LiveSurveillanceConsole() {
                 key={cam.id}
                 type="button"
                 onClick={() => handleSelectCamera(cam)}
-                title={`${cam.name} (Shortcut: ${shortcutKey ? `Key ${shortcutKey}` : "None"})`}
-                className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 cursor-pointer select-none border ${
+                title={`${cam.name} (Channel ${ch} • Shortcut: ${shortcutKey ? `Key ${shortcutKey}` : "None"})`}
+                className={`flex flex-col justify-between p-2 rounded-xl text-left transition-all cursor-pointer select-none border relative group min-h-[52px] ${
                   isSelected
-                    ? "bg-slate-900 border-slate-900 text-white shadow-xs"
-                    : "bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                    ? "bg-slate-950 border-emerald-500 text-white shadow-md ring-2 ring-emerald-500/40"
+                    : "bg-white border-slate-200 text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/20 hover:text-slate-950 hover:shadow-2xs"
                 }`}
               >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    cam.status === "offline"
-                      ? "bg-slate-400"
-                      : isSelected
-                      ? "bg-emerald-400"
-                      : "bg-emerald-500"
+                <div className="flex items-center justify-between gap-1 w-full">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        cam.status === "offline"
+                          ? "bg-slate-400"
+                          : isSelected
+                          ? "bg-emerald-400 ring-2 ring-emerald-400/40 animate-pulse"
+                          : "bg-emerald-500"
+                      }`}
+                    />
+                    <span
+                      className={`font-mono text-[10px] font-bold px-1 py-0.2 rounded ${
+                        isSelected
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                          : "bg-slate-100 text-slate-600 group-hover:bg-emerald-100 group-hover:text-emerald-800"
+                      }`}
+                    >
+                      {ch ? `CH ${String(ch).padStart(2, "0")}` : "CAM"}
+                    </span>
+                  </div>
+                  {shortcutKey && (
+                    <span
+                      className={`font-mono text-[9px] px-1 rounded font-bold ${
+                        isSelected
+                          ? "text-slate-300 bg-slate-800 border border-slate-700"
+                          : "text-slate-400 bg-slate-50 border border-slate-200"
+                      }`}
+                    >
+                      {shortcutKey}
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  className={`text-xs font-semibold truncate leading-tight w-full mt-1 ${
+                    isSelected ? "text-white font-bold" : "text-slate-800 group-hover:text-emerald-950"
                   }`}
-                />
-                <span
-                  className={`font-mono text-[10px] px-1 py-0.2 rounded font-bold ${
-                    isSelected
-                      ? "bg-slate-800 text-emerald-400"
-                      : "bg-slate-100 text-slate-500"
-                  }`}
+                  title={cam.name}
                 >
-                  {ch ? `CH ${String(ch).padStart(2, "0")}` : "CAM"}
-                </span>
-                <span className="truncate max-w-[130px] font-semibold">
                   {cam.name}
-                </span>
-                {shortcutKey && (
-                  <span
-                    className={`font-mono text-[9px] px-1 rounded ${
-                      isSelected
-                        ? "text-slate-400 bg-slate-800"
-                        : "text-slate-400 bg-slate-50 border border-slate-200"
-                    }`}
-                  >
-                    {shortcutKey}
-                  </span>
-                )}
+                </div>
               </button>
             );
           })}
-
-          <button
-            type="button"
-            onClick={() => setShowAddCamera(true)}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-dashed border-slate-300 text-slate-600 hover:text-emerald-700 hover:border-emerald-500 hover:bg-emerald-50/50 transition-colors shrink-0 cursor-pointer"
-            title="Add New Channel"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add</span>
-          </button>
-        </div>
-
-        {/* View toggle */}
-        <div className="flex items-center gap-1 border border-slate-200 rounded-lg p-0.5 bg-slate-50 shrink-0">
-          <button
-            type="button"
-            onClick={() => setViewMode("compact")}
-            className={`px-2 py-1 text-[11px] font-medium rounded-md cursor-pointer transition-colors ${
-              viewMode === "compact"
-                ? "bg-white text-slate-900 shadow-2xs font-semibold"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            Feed
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("grid")}
-            className={`px-2 py-1 text-[11px] font-medium rounded-md cursor-pointer transition-colors ${
-              viewMode === "grid"
-                ? "bg-white text-slate-900 shadow-2xs font-semibold"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            Matrix
-          </button>
         </div>
       </div>
 
@@ -484,16 +516,6 @@ export function LiveSurveillanceConsole() {
                   />
                   <ScanFace className="w-3.5 h-3.5 text-slate-500" />
                   <span>Biometric Faces</span>
-                </label>
-                <label className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={enableVehicleDetector}
-                    onChange={(e) => setEnableVehicleDetector(e.target.checked)}
-                    className="w-3.5 h-3.5 rounded text-emerald-600 border-slate-300 focus:ring-0 cursor-pointer"
-                  />
-                  <Car className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Vehicles</span>
                 </label>
               </div>
             )}

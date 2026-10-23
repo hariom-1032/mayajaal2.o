@@ -164,7 +164,7 @@ export default function OperatorLayout({
   // "rail" = compact icon rail (68px) that expands to 256px on hover
   // "hidden" = completely off-screen (0px), expands to 256px on left-edge / trigger hover
   // "pinned" = locked open at 256px
-  const [sidebarMode, setSidebarMode] = useState<"rail" | "hidden" | "pinned">("rail");
+  const [sidebarMode, setSidebarMode] = useState<"rail" | "hidden" | "pinned">("pinned");
   const [isHovered, setIsHovered] = useState(false);
   const leaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -204,19 +204,29 @@ export default function OperatorLayout({
     }, 250);
   };
 
+  // Automatically collapse hover sidebar when navigation completes to a new route
+  useEffect(() => {
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+    setIsHovered(false);
+  }, [pathname]);
+
   // Whether the sidebar is currently showing its expanded view
   const isExpanded = sidebarMode === "pinned" || isHovered;
 
-  // Seamless navigation handler that preserves Next.js client-side prefetching and instantly closes hover sidebar
-  const handleNavClick = () => {
-    // Immediately dismiss floating hover menu so operator gets instant feedback
-    if (sidebarMode !== "pinned") {
-      if (leaveTimeoutRef.current) {
-        clearTimeout(leaveTimeoutRef.current);
-        leaveTimeoutRef.current = null;
-      }
-      setIsHovered(false);
+  // Rock-solid navigation handler: triggers client navigation without prematurely collapsing layout under cursor
+  const handleNavClick = (href: string, e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+      return;
     }
+    e.preventDefault();
+    if (pathname === href) {
+      setIsHovered(false);
+      return;
+    }
+    router.push(href);
   };
 
   const mainNavItems: NavItem[] = [
@@ -239,7 +249,7 @@ export default function OperatorLayout({
       label: "Alerts",
       href: "/alerts",
       icon: AlertTriangle,
-      badge: unacknowledgedCount > 0 ? unacknowledgedCount : 8,
+      badge: unacknowledgedCount > 0 ? unacknowledgedCount : undefined,
       badgeColor: "bg-rose-600 text-white",
     },
     {
@@ -341,20 +351,6 @@ export default function OperatorLayout({
         aria-hidden="true"
       />
 
-      {/* Subtle backdrop overlay when expanded in floating hover mode */}
-      {sidebarMode !== "pinned" && isExpanded && (
-        <div
-          onClick={() => {
-            if (leaveTimeoutRef.current) {
-              clearTimeout(leaveTimeoutRef.current);
-              leaveTimeoutRef.current = null;
-            }
-            setIsHovered(false);
-          }}
-          className="fixed inset-0 bg-slate-900/20 backdrop-blur-[0.5px] z-30 transition-opacity duration-300 cursor-pointer"
-        />
-      )}
-
       {/* Light Government Green Left Sidebar (Auto-expand on hover, auto-collapse on mouse leave) */}
       <aside
         onMouseEnter={handleMouseEnter}
@@ -375,7 +371,7 @@ export default function OperatorLayout({
             <Link
               href="/dashboard"
               prefetch={true}
-              onClick={handleNavClick}
+              onClick={(e) => handleNavClick("/dashboard", e)}
               className="flex items-center gap-3 group min-w-0 cursor-pointer"
               title="MAATRIX - Border Video Analytics"
             >
@@ -469,12 +465,12 @@ export default function OperatorLayout({
                   key={item.href}
                   href={item.href}
                   prefetch={true}
-                  onClick={handleNavClick}
+                  onClick={(e) => handleNavClick(item.href, e)}
                   title={!isExpanded ? item.label : undefined}
-                  className={`w-full h-11 flex items-center rounded-xl text-xs font-semibold relative select-none cursor-pointer transition-colors active:scale-[0.98] px-3 ${
+                  className={`w-full h-11 flex items-center rounded-xl text-xs font-semibold relative select-none cursor-pointer transition-colors px-3 ${
                     isActive
                       ? "bg-[#d5e6db] text-[#123621] font-bold shadow-2xs border border-[#b8d1c1]"
-                      : "text-[#2e543d] hover:bg-[#e0ede4] hover:text-[#123621]"
+                      : "text-[#2e543d] hover:bg-[#e0ede4] hover:text-[#123621] active:bg-[#cbded1]"
                   }`}
                 >
                   <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 pointer-events-none">
@@ -532,12 +528,12 @@ export default function OperatorLayout({
                     key={item.href}
                     href={item.href}
                     prefetch={true}
-                    onClick={handleNavClick}
+                    onClick={(e) => handleNavClick(item.href, e)}
                     title={!isExpanded ? item.label : undefined}
-                    className={`w-full h-11 flex items-center rounded-xl text-xs font-semibold relative select-none cursor-pointer transition-colors active:scale-[0.98] px-3 ${
+                    className={`w-full h-11 flex items-center rounded-xl text-xs font-semibold relative select-none cursor-pointer transition-colors px-3 ${
                       isActive
                         ? "bg-[#d5e6db] text-[#123621] font-bold shadow-2xs border border-[#b8d1c1]"
-                        : "text-[#2e543d] hover:bg-[#e0ede4] hover:text-[#123621]"
+                        : "text-[#2e543d] hover:bg-[#e0ede4] hover:text-[#123621] active:bg-[#cbded1]"
                     }`}
                   >
                     <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 pointer-events-none">
@@ -605,26 +601,18 @@ export default function OperatorLayout({
             <button
               type="button"
               onClick={() => {
-                if (sidebarMode === "rail") handleModeChange("hidden");
-                else if (sidebarMode === "hidden") handleModeChange("pinned");
-                else handleModeChange("rail");
+                handleModeChange(sidebarMode === "pinned" ? "rail" : "pinned");
               }}
               className="p-2 rounded-xl text-slate-600 hover:text-[#18492d] hover:bg-[#ebf2ed] border border-slate-200 transition-all flex items-center gap-1.5 group cursor-pointer shadow-2xs flex-shrink-0"
-              title={`Sidebar Mode: ${
-                sidebarMode === "rail"
-                  ? "Hover Rail (Click for 100% Pure Fullscreen)"
-                  : sidebarMode === "hidden"
-                  ? "100% Fullscreen (Click to Pin Open)"
-                  : "Pinned Open (Click for Hover Rail)"
-              }`}
+              title={
+                sidebarMode === "pinned"
+                  ? "Click to switch to Compact Hover Rail"
+                  : "Click to Pin Sidebar Open"
+              }
             >
               <PanelLeft className="w-4 h-4 text-[#1e4b38] group-hover:scale-105 transition-transform" />
               <span className="hidden xl:inline text-[11px] font-semibold text-slate-600 group-hover:text-[#18492d]">
-                {sidebarMode === "rail"
-                  ? "Hover Rail"
-                  : sidebarMode === "hidden"
-                  ? "100% Fullscreen"
-                  : "Pinned"}
+                {sidebarMode === "pinned" ? "Pinned" : "Hover Rail"}
               </span>
             </button>
 

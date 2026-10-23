@@ -7,57 +7,7 @@ import { api } from "@/lib/api";
 export const INCIDENT_STORAGE_KEY = "maatrix_incident_records";
 const MAX_LOCAL_INCIDENTS = 500;
 
-export const SEED_INCIDENTS: AlertItem[] = [
-  {
-    id: "incident-demo-01",
-    title: "Geofence Infiltration: RS Pura Zero Line",
-    location: "Sector-04 [bop-jk-01] — Zero Line Perimeter",
-    time: "2m ago",
-    timestamp: Date.now() - 120000,
-    severity: "High",
-    threatLevel: "CRITICAL",
-    cameraId: "bop-jk-01",
-    cameraName: "BOP RS Pura Primary PTZ",
-    className: "person",
-    confidence: 0.94,
-    acknowledged: false,
-    category: "geofence_breach",
-    notes: "Thermal perimeter sensor tripped across forward barbed wire zone.",
-  },
-  {
-    id: "incident-demo-02",
-    title: "Suspect Facial Recognition Sighting",
-    location: "Sector-04 [bop-jk-02] — Octroi Border Post",
-    time: "5m ago",
-    timestamp: Date.now() - 300000,
-    severity: "High",
-    threatLevel: "HIGH",
-    cameraId: "bop-jk-02",
-    cameraName: "Octroi Outpost Optical Cam 02",
-    className: "suspect",
-    suspectName: "Tariq Ahmed (BOLO-2026-089)",
-    confidence: 0.89,
-    acknowledged: false,
-    category: "suspect_sighting",
-    notes: "Positive match on enrolled watchlist suspect with high facial embedding similarity.",
-  },
-  {
-    id: "incident-demo-03",
-    title: "Directional Tripwire Crossing Detected",
-    location: "Sector-05 [bop-sk-01] — Sikkim Transit Corridor",
-    time: "14m ago",
-    timestamp: Date.now() - 840000,
-    severity: "Medium",
-    threatLevel: "MEDIUM",
-    cameraId: "bop-sk-01",
-    cameraName: "Nathu La Optical Gateway",
-    className: "truck",
-    confidence: 0.88,
-    acknowledged: true,
-    category: "tripwire_breach",
-    notes: "Vehicle crossed ingress tripwire barrier moving inward from boundary.",
-  },
-];
+export const SEED_INCIDENTS: AlertItem[] = [];
 
 type AlertListener = (alerts: AlertItem[]) => void;
 type ConnectionListener = (connected: boolean) => void;
@@ -66,13 +16,16 @@ const listeners = new Set<AlertListener>();
 const connectionListeners = new Set<ConnectionListener>();
 
 function loadStoredIncidents(): AlertItem[] {
-  if (typeof window === "undefined") return [...SEED_INCIDENTS];
+  if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(INCIDENT_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      const clean = parsed.filter(
+        (item: AlertItem) => item && !String(item.id || "").startsWith("incident-demo-")
+      );
+      return clean;
     }
   } catch (err) {
     console.warn("[IncidentsStore] Failed to parse local incidents:", err);
@@ -349,9 +302,7 @@ export const alertsStore = {
 };
 
 export function useAlerts() {
-  const [alerts, setAlerts] = useState<AlertItem[]>(
-    memoryAlerts.length > 0 ? memoryAlerts : SEED_INCIDENTS
-  );
+  const [alerts, setAlerts] = useState<AlertItem[]>(memoryAlerts);
 
   const [connected, setConnected] = useState<boolean>(isConnected);
 
@@ -359,12 +310,7 @@ export function useAlerts() {
     if (!initialized && typeof window !== "undefined") {
       initialized = true;
       const stored = loadStoredIncidents();
-      if (stored.length > 0) {
-        memoryAlerts = stored;
-      } else {
-        memoryAlerts = [...SEED_INCIDENTS];
-        persistIncidents(memoryAlerts);
-      }
+      memoryAlerts = stored;
       notify(true);
 
       initWebSocket();
