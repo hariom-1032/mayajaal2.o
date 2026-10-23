@@ -3604,9 +3604,9 @@
       0.028135176748037338,
       0.024203810840845108
     ],
-    "is_suspect": true,
+    "is_suspect": false,
     "threat_level": "LOW",
-    "category": "Wanted / BOLO",
+    "category": "Authorized Personnel",
     "notes": ""
   },
   {

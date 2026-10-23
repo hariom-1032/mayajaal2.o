@@ -30,6 +30,19 @@ except ImportError:
     face_alignment = None  # type: ignore[assignment, misc]
     _UNIFACE_AVAILABLE = False
 
+# UniFace FaceMesh: 478 3D Dense Landmarks & Iris Keypoints
+try:
+    from uniface import FaceMesh
+    from uniface.constants import FaceMeshWeights
+    from uniface.landmark import IRIS_LEFT, IRIS_RIGHT
+    _FACEMESH_AVAILABLE = True
+except ImportError:
+    FaceMesh = None  # type: ignore[assignment, misc]
+    FaceMeshWeights = None  # type: ignore[assignment, misc]
+    IRIS_LEFT = None  # type: ignore[assignment, misc]
+    IRIS_RIGHT = None  # type: ignore[assignment, misc]
+    _FACEMESH_AVAILABLE = False
+
 # EDifFIQA: Neural Face Image Quality Assessment
 try:
     from uniface import EDifFIQA
@@ -39,6 +52,90 @@ except ImportError:
     _EDIFFIQA_AVAILABLE = False
 
 logger = logging.getLogger("SIH26187.FaceService")
+
+
+def compute_3d_head_pose_angles(landmarks_3d: np.ndarray) -> tuple[float, float, float]:
+    """
+    Compute Roll, Yaw, Pitch in degrees from 3D FaceMesh landmarks (478x3 or 468x3).
+    Returns (roll_deg, yaw_deg, pitch_deg).
+    """
+    if landmarks_3d is None or len(landmarks_3d) < 468:
+        return 0.0, 0.0, 0.0
+    lms = landmarks_3d
+    # Roll: 2D angle between outer eye corners (33 left, 263 right)
+    dx_roll = float(lms[263, 0] - lms[33, 0])
+    dy_roll = float(lms[263, 1] - lms[33, 1])
+    roll = float(np.degrees(np.arctan2(dy_roll, max(dx_roll, 1e-4))))
+
+    # Yaw: Horizontal depth differential between right and left face contours
+    dz_yaw = float(lms[263, 2] - lms[33, 2])
+    dx_yaw = float(lms[263, 0] - lms[33, 0])
+    yaw = float(np.degrees(np.arctan2(dz_yaw, max(dx_yaw, 1e-4))))
+
+    # Pitch: Vertical depth differential between top of forehead (10) and bottom of chin (152)
+    dz_pitch = float(lms[152, 2] - lms[10, 2])
+    dy_pitch = float(lms[152, 1] - lms[10, 1])
+    pitch = float(np.degrees(np.arctan2(dz_pitch, max(dy_pitch, 1e-4))))
+
+    return roll, yaw, pitch
+
+
+def compute_eye_aspect_ratio(landmarks_3d: np.ndarray) -> tuple[float, float]:
+    """
+    Compute Eye Aspect Ratio (EAR) for left and right eyes using MediaPipe indices.
+    Values < 0.18 typically signify blinking, squinting, or closed eyes.
+    Returns (ear_left, ear_right).
+    """
+    if landmarks_3d is None or len(landmarks_3d) < 468:
+        return 0.35, 0.35
+    lms = landmarks_3d
+    # Left eye: corner1=33, top1=160, top2=158, corner2=133, bot1=153, bot2=144
+    v1_l = float(np.linalg.norm(lms[160, :2] - lms[144, :2]))
+    v2_l = float(np.linalg.norm(lms[158, :2] - lms[153, :2]))
+    h_l = float(np.linalg.norm(lms[33, :2] - lms[133, :2]))
+    ear_left = (v1_l + v2_l) / max(2.0 * h_l, 1e-4)
+
+    # Right eye: corner1=362, top1=385, top2=387, corner2=263, bot1=373, bot2=380
+    v1_r = float(np.linalg.norm(lms[385, :2] - lms[380, :2]))
+    v2_r = float(np.linalg.norm(lms[387, :2] - lms[373, :2]))
+    h_r = float(np.linalg.norm(lms[362, :2] - lms[263, :2]))
+    ear_right = (v1_r + v2_r) / max(2.0 * h_r, 1e-4)
+
+    return float(ear_left), float(ear_right)
+
+
+def compute_mouth_aspect_ratio(landmarks_3d: np.ndarray) -> float:
+    """
+    Compute Mouth Aspect Ratio (MAR) to detect non-neutral facial expressions (laughing, open mouth).
+    Values > 0.42 indicate wide open mouth / extreme expression.
+    """
+    if landmarks_3d is None or len(landmarks_3d) < 468:
+        return 0.10
+    lms = landmarks_3d
+    # Upper lip=13, Lower lip=14, Left corner=61, Right corner=291
+    v = float(np.linalg.norm(lms[13, :2] - lms[14, :2]))
+    h = float(np.linalg.norm(lms[61, :2] - lms[291, :2]))
+    return float(v / max(h, 1e-4))
+
+
+def extract_canonical_5pts_from_mesh(landmarks_3d: np.ndarray) -> np.ndarray:
+    """
+    Extract sub-pixel 5 canonical alignment keypoints [left_pupil, right_pupil, nose_tip, left_mouth, right_mouth].
+    Uses iris centers if available (478 pts), falling back to eye corners (468 pts).
+    """
+    lms = landmarks_3d
+    if len(lms) >= 478 and IRIS_LEFT is not None and IRIS_RIGHT is not None:
+        left_pupil = lms[IRIS_LEFT][0, :2]
+        right_pupil = lms[IRIS_RIGHT][0, :2]
+    else:
+        left_pupil = (lms[33, :2] + lms[133, :2]) / 2.0
+        right_pupil = (lms[362, :2] + lms[263, :2]) / 2.0
+
+    nose_tip = lms[1, :2]
+    left_mouth = lms[61, :2]
+    right_mouth = lms[291, :2]
+
+    return np.array([left_pupil, right_pupil, nose_tip, left_mouth, right_mouth], dtype=np.float32)
 
 
 class QualityPredictorAdapter:
@@ -192,6 +289,7 @@ class FaceService:
 
         # --- UniFace engine (Exclusive) ---
         self.analyzer: Optional[Any] = None
+        self.mesher: Optional[Any] = None
         self.quality_scorer: Optional[Any] = None
         self.use_uniface: bool = True
         self.embedding_dim: int = 512
@@ -239,6 +337,14 @@ class FaceService:
                 except Exception as q_err:
                     logger.warning("EDifFIQA initialization failed (non-critical): %s", q_err)
 
+            # Initialize FaceMesh V2_478 for high-precision enrollment & alignment
+            if _FACEMESH_AVAILABLE and FaceMesh is not None and FaceMeshWeights is not None:
+                try:
+                    self.mesher = FaceMesh(model_name=FaceMeshWeights.V2_478)
+                    logger.info("FaceMesh (V2_478 3D + irises) loaded for biometric enrollment and alignment.")
+                except Exception as m_err:
+                    logger.warning("FaceMesh initialization failed (fallback to detector landmarks): %s", m_err)
+
             self.analyzer = FaceAnalyzer(
                 recognizer=AdaFace(model_name=AdaFaceWeights.IR_101),
                 predictors=quality_predictors if quality_predictors else None,
@@ -246,8 +352,13 @@ class FaceService:
             self.use_uniface = True
             self.embedding_dim = 512
             self.match_threshold = 0.32
-            logger.info("FaceService initialized with UniFace (AdaFace IR-101, 512-D embeddings%s).",
-                        " + EDifFIQA quality" if self.quality_scorer else "")
+            features_tag = []
+            if self.mesher:
+                features_tag.append("FaceMesh V2_478")
+            if self.quality_scorer:
+                features_tag.append("EDifFIQA")
+            tag_str = f" + {' + '.join(features_tag)}" if features_tag else ""
+            logger.info("FaceService initialized with UniFace (AdaFace IR-101, 512-D embeddings%s).", tag_str)
         except Exception as exc:
             logger.exception("Failed to initialize UniFace FaceAnalyzer: %s", exc)
 
@@ -304,9 +415,12 @@ class FaceService:
     @property
     def engine_name(self) -> str:
         """Human-readable active engine identifier for status endpoints."""
+        parts = ["AdaFace IR-101 512-D"]
+        if self.mesher is not None:
+            parts.append("FaceMesh V2_478")
         if self.quality_scorer is not None:
-            return "UniFace (AdaFace IR-101 512-D + EDifFIQA)"
-        return "UniFace (AdaFace IR-101 512-D)"
+            parts.append("EDifFIQA")
+        return f"UniFace ({' + '.join(parts)})"
 
     @property
     def is_ready(self) -> bool:
@@ -655,6 +769,23 @@ class FaceService:
             with self.lock:
                 faces_uf = self.analyzer.analyze(image_bgr)
 
+            # Fallback for tightly-cropped registration images where detector may miss
+            if not faces_uf and self.mesher is not None:
+                h_img, w_img = image_bgr.shape[:2]
+                if w_img >= 40 and h_img >= 40:
+                    try:
+                        probe_res = self.mesher.predict(image_bgr, bboxes=[[0, 0, w_img, h_img]])
+                        if probe_res and float(getattr(probe_res[0], "score", 0.0)) >= 0.85:
+                            class _SyntheticFace:
+                                def __init__(self, bbox: list[float], conf: float):
+                                    self.bbox = bbox
+                                    self.confidence = conf
+                                    self.landmarks = None
+                                    self.embedding = None
+                            faces_uf = [_SyntheticFace([0.0, 0.0, float(w_img), float(h_img)], float(probe_res[0].score))]
+                    except Exception as probe_err:
+                        logger.debug("FaceMesh probe fallback error: %s", probe_err)
+
             if not faces_uf:
                 return {
                     "success": False,
@@ -667,13 +798,13 @@ class FaceService:
             fh = float(bbox_arr[3] - bbox_arr[1])
             det_conf = float(best_uf.confidence)
 
-            if fw < 50 or fh < 50:
+            if fw < 40 or fh < 40:
                 return {
                     "success": False,
-                    "error": f"Face is too small ({int(fw)}x{int(fh)} px). Minimum 50x50 px required for registration.",
+                    "error": f"Face is too small ({int(fw)}x{int(fh)} px). Minimum 40x40 px required for registration.",
                 }
 
-            if det_conf < 0.50:
+            if det_conf < 0.40:
                 return {
                     "success": False,
                     "error": f"Face detection confidence is low ({int(det_conf * 100)}%). Please face the camera directly in clear light.",
@@ -681,53 +812,138 @@ class FaceService:
 
             # EDifFIQA Neural Quality Gate: reject blurry/occluded/poorly-lit faces
             enrollment_quality = self._score_face_quality(best_uf, image_bgr=image_bgr)
-            if enrollment_quality < 0.30 and self.quality_scorer is not None:
+            if enrollment_quality < 0.25 and self.quality_scorer is not None:
                 return {
                     "success": False,
                     "error": f"Face image quality is too low ({int(enrollment_quality * 100)}%). "
                              f"Please ensure clear lighting, no blur, and face the camera directly.",
                 }
-            if enrollment_quality < 0.30:
+            if enrollment_quality < 0.25:
                 logger.warning("Low enrollment quality (%.2f) for %s but EDifFIQA not available — proceeding.", enrollment_quality, name)
 
-            # Landmark Pose Quality Gate: Ensure frontal face alignment during enrollment
-            if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
-                lms = np.array(best_uf.landmarks, dtype=np.float32)
-                if len(lms) >= 5:
-                    left_eye, right_eye, nose = lms[0], lms[1], lms[2]
-                    # Check Roll (head tilt angle)
-                    dx = float(right_eye[0] - left_eye[0])
-                    dy = float(right_eye[1] - left_eye[1])
-                    roll_deg = abs(float(np.degrees(np.arctan2(dy, dx))))
-                    if roll_deg > 18.0:
-                        return {
-                            "success": False,
-                            "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment for optimal recognition accuracy.",
-                        }
-                    # Check Yaw (head turned left/right via eye-to-nose symmetry)
-                    dist_l = float(np.linalg.norm(nose - left_eye))
-                    dist_r = float(np.linalg.norm(nose - right_eye))
-                    yaw_ratio = dist_l / max(dist_r, 1e-4)
-                    if yaw_ratio < 0.40 or yaw_ratio > 2.50:
-                        return {
-                            "success": False,
-                            "error": "Face is turned at an angle. Please look directly into the camera during enrollment for optimal recognition accuracy.",
-                        }
-                    # Check Pitch (head looking up or down)
-                    left_mouth, right_mouth = lms[3], lms[4]
-                    eye_center = (left_eye + right_eye) / 2.0
-                    mouth_center = (left_mouth + right_mouth) / 2.0
-                    eye_to_nose = float(np.linalg.norm(nose - eye_center))
-                    nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
-                    pitch_ratio = eye_to_nose / max(nose_to_mouth, 1e-4)
-                    if pitch_ratio < 0.35 or pitch_ratio > 3.0:
-                        return {
-                            "success": False,
-                            "error": "Head is tilted up or down. Please look straight at the camera during enrollment for optimal recognition accuracy.",
-                        }
+            # -------------------------------------------------------------
+            # FACEMESH DENSE 3D + IRIS VERIFICATION & SUB-PIXEL ALIGNMENT
+            # -------------------------------------------------------------
+            mesh_verified = False
+            canonical_5pts = None
+            mesh_metrics: dict[str, Any] = {}
 
+            if self.mesher is not None:
+                try:
+                    bx1 = max(0.0, float(bbox_arr[0]))
+                    by1 = max(0.0, float(bbox_arr[1]))
+                    bx2 = min(float(image_bgr.shape[1]), float(bbox_arr[2]))
+                    by2 = min(float(image_bgr.shape[0]), float(bbox_arr[3]))
+                    mesh_results = self.mesher.predict(image_bgr, bboxes=[[bx1, by1, bx2, by2]])
+
+                    if mesh_results:
+                        res = mesh_results[0]
+                        presence_score = float(getattr(res, "score", 1.0))
+                        lms_3d = res.landmarks
+
+                        if presence_score < 0.70:
+                            return {
+                                "success": False,
+                                "error": f"Facial mesh presence confidence too low ({int(presence_score * 100)}%). "
+                                         f"Please remove face coverings and ensure clear illumination.",
+                            }
+
+                        # Check 1: Eye Aspect Ratio (Blink / Squint Gate)
+                        ear_left, ear_right = compute_eye_aspect_ratio(lms_3d)
+                        if ear_left < 0.18 or ear_right < 0.18:
+                            return {
+                                "success": False,
+                                "error": "Eyes appear closed or squinting during enrollment. "
+                                         "Please look directly into the camera with both eyes open for optimal recognition.",
+                            }
+
+                        # Check 2: Mouth Aspect Ratio (Facial Expression Gate)
+                        mar = compute_mouth_aspect_ratio(lms_3d)
+                        if mar > 0.42:
+                            return {
+                                "success": False,
+                                "error": "Non-neutral facial expression or open mouth detected. "
+                                         "Please keep a relaxed, neutral expression during enrollment.",
+                            }
+
+                        # Check 3: True 3D Head Pose Angles
+                        roll_deg, yaw_deg, pitch_deg = compute_3d_head_pose_angles(lms_3d)
+                        if abs(roll_deg) > 16.0:
+                            return {
+                                "success": False,
+                                "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment.",
+                            }
+                        if abs(yaw_deg) > 16.0:
+                            return {
+                                "success": False,
+                                "error": f"Face is turned at an angle (Yaw: {int(yaw_deg)}°). Please face the camera directly.",
+                            }
+                        if abs(pitch_deg) > 16.0:
+                            return {
+                                "success": False,
+                                "error": f"Head is tilted up or down (Pitch: {int(pitch_deg)}°). Please look straight at the camera.",
+                            }
+
+                        # Check 4: Extract sub-pixel canonical 5-point alignment keypoints from pupil centers
+                        canonical_5pts = extract_canonical_5pts_from_mesh(lms_3d)
+                        mesh_verified = True
+                        mesh_metrics = {
+                            "presence_score": round(presence_score, 3),
+                            "yaw_deg": round(yaw_deg, 1),
+                            "pitch_deg": round(pitch_deg, 1),
+                            "roll_deg": round(roll_deg, 1),
+                            "ear_left": round(ear_left, 3),
+                            "ear_right": round(ear_right, 3),
+                            "mar": round(mar, 3),
+                        }
+                        logger.info("FaceMesh enrollment gate passed: %s", mesh_metrics)
+
+                except Exception as m_gate_err:
+                    logger.warning("FaceMesh enrollment gate encountered error (falling back to 2D checks): %s", m_gate_err)
+
+            # Fallback to 2D heuristics if FaceMesh was unavailable or skipped
+            if not mesh_verified:
+                if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
+                    lms = np.array(best_uf.landmarks, dtype=np.float32)
+                    if len(lms) >= 5:
+                        canonical_5pts = lms[:5]
+                        left_eye, right_eye, nose = lms[0], lms[1], lms[2]
+                        # Check Roll (head tilt angle)
+                        dx = float(right_eye[0] - left_eye[0])
+                        dy = float(right_eye[1] - left_eye[1])
+                        roll_deg = abs(float(np.degrees(np.arctan2(dy, dx))))
+                        if roll_deg > 18.0:
+                            return {
+                                "success": False,
+                                "error": f"Head is tilted ({int(roll_deg)}°). Please keep your head upright during enrollment for optimal recognition accuracy.",
+                            }
+                        # Check Yaw
+                        dist_l = float(np.linalg.norm(nose - left_eye))
+                        dist_r = float(np.linalg.norm(nose - right_eye))
+                        yaw_ratio = dist_l / max(dist_r, 1e-4)
+                        if yaw_ratio < 0.40 or yaw_ratio > 2.50:
+                            return {
+                                "success": False,
+                                "error": "Face is turned at an angle. Please look directly into the camera during enrollment for optimal recognition accuracy.",
+                            }
+                        # Check Pitch
+                        left_mouth, right_mouth = lms[3], lms[4]
+                        eye_center = (left_eye + right_eye) / 2.0
+                        mouth_center = (left_mouth + right_mouth) / 2.0
+                        eye_to_nose = float(np.linalg.norm(nose - eye_center))
+                        nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
+                        pitch_ratio = eye_to_nose / max(nose_to_mouth, 1e-4)
+                        if pitch_ratio < 0.35 or pitch_ratio > 3.0:
+                            return {
+                                "success": False,
+                                "error": "Head is tilted up or down. Please look straight at the camera during enrollment for optimal recognition accuracy.",
+                            }
+
+            # Extract 512-D TTA embedding using sub-pixel pupil-aligned canonical keypoints
             feature_512 = None
-            if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
+            if canonical_5pts is not None:
+                feature_512 = self.extract_tta_embedding(image_bgr, canonical_5pts)
+            elif hasattr(best_uf, "landmarks") and best_uf.landmarks is not None:
                 feature_512 = self.extract_tta_embedding(image_bgr, best_uf.landmarks)
             if feature_512 is None and best_uf.embedding is not None:
                 feature_512 = best_uf.embedding.astype(np.float32).reshape(1, 512)
@@ -736,10 +952,11 @@ class FaceService:
                 return {"success": False, "error": "Failed to extract 512-D facial feature embedding."}
 
             features_to_store = [feature_512]
-            if hasattr(best_uf, "landmarks") and best_uf.landmarks is not None and face_alignment is not None:
+            alignment_pts = canonical_5pts if canonical_5pts is not None else getattr(best_uf, "landmarks", None)
+            if alignment_pts is not None and face_alignment is not None:
                 try:
                     aligned_face, _ = face_alignment(
-                        image_bgr, best_uf.landmarks, image_size=self.analyzer.recognizer.input_size
+                        image_bgr, alignment_pts, image_size=self.analyzer.recognizer.input_size
                     )
                     if aligned_face is not None:
                         rec = self.analyzer.recognizer
@@ -808,6 +1025,8 @@ class FaceService:
                     "threat_level": existing["threat_level"],
                     "category": existing["category"],
                     "enrollment_quality": round(enrollment_quality, 3),
+                    "mesh_verified": mesh_verified,
+                    "mesh_metrics": mesh_metrics,
                     "message": f"Added samples to {name} ({len(existing['features'])} total, 512-D, quality={enrollment_quality:.0%}).",
                 }
 
@@ -850,7 +1069,8 @@ class FaceService:
             self.known_persons.append(new_record)
             self._save_database()
 
-            logger.info("Enrolled %s (ID: %s, 512-D UniFace, quality=%.2f).", name, person_id, enrollment_quality)
+            mesh_str = " + FaceMesh 3D" if mesh_verified else ""
+            logger.info("Enrolled %s (ID: %s, 512-D UniFace%s, quality=%.2f).", name, person_id, mesh_str, enrollment_quality)
             return {
                 "success": True,
                 "person_id": person_id,
@@ -862,7 +1082,9 @@ class FaceService:
                 "threat_level": new_record["threat_level"],
                 "category": new_record["category"],
                 "enrollment_quality": round(enrollment_quality, 3),
-                "message": f"Successfully enrolled {name} (512-D UniFace, quality={enrollment_quality:.0%}).",
+                "mesh_verified": mesh_verified,
+                "mesh_metrics": mesh_metrics,
+                "message": f"Successfully enrolled {name} (512-D UniFace{mesh_str}, quality={enrollment_quality:.0%}).",
             }
 
     def add_sample(
