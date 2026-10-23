@@ -1772,11 +1772,16 @@ class FaceService:
 
             x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
             name = f.get("name", "Unknown")
-            is_threat = f.get("is_threat", False)
-            is_known = f.get("is_known", False)
+            is_breach = bool(f.get("is_breach", False))
+            breach_lbl = str(f.get("breach_label", "PERIMETER"))
+            is_threat = bool(f.get("is_threat", False)) or is_breach
+            is_known = bool(f.get("is_known", False))
             conf_pct = float(f.get("calibrated_conf", 0.0))
 
-            if is_threat:
+            if is_breach:
+                box_color = (0, 0, 255)       # Bright Warning Red
+                tag_bg = (0, 0, 200)
+            elif is_threat:
                 box_color = (0, 0, 220)       # Crimson Red
                 tag_bg = (0, 0, 180)
             elif is_known:
@@ -1786,9 +1791,15 @@ class FaceService:
                 box_color = (180, 180, 180)   # Neutral Gray
                 tag_bg = (100, 100, 100)
 
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
+            box_thickness = 3 if is_breach else 2
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, box_thickness)
 
-            label = f"{name} {int(conf_pct)}%" if show_metrics else name
+            if is_breach:
+                label = f"🚨 BREACH: {breach_lbl} [{name}]"
+            elif show_metrics:
+                label = f"{name} {int(conf_pct)}%"
+            else:
+                label = name
             (lw, lh), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
 
             ty2 = max(y1, lh + 6)
