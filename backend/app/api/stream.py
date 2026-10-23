@@ -459,6 +459,7 @@ def draw_bounding_boxes(
 def stream_generator(
     rtsp_url: str,
     draw_detections: bool = True,
+    draw_hud: bool = False,
     conf_threshold: float = 0.30,
     model_name: str = "best",
     fps_limit: int = 24,
@@ -565,6 +566,10 @@ def stream_generator(
                 # Attempt periodic reconnect every few iterations
                 cap, conn_diag, resolved_url, protocol = open_video_source(rtsp_url)
                 continue
+
+            # Flush buffered frame backlog for live RTSP to prevent latency accumulation
+            if not is_video_file and cap is not None:
+                cap.grab()
 
             success, frame = cap.read()
 
@@ -735,16 +740,17 @@ def stream_generator(
                 except Exception as draw_exc:
                     logger.debug("Live stream face draw exception: %s", draw_exc)
 
-            total_det_count = len(cached_detections)
-            draw_tactical_hud(
-                frame,
-                rtsp_url=resolved_url,
-                fps=measured_fps,
-                detections_count=total_det_count,
-                is_live=not is_video_file,
-                protocol=protocol,
-                breach_label=active_breach_name if (time.time() - active_breach_time < 4.0) else None,
-            )
+            if draw_hud:
+                total_det_count = len(cached_detections) + (len(cached_vehicles) if enable_vehicle_detection else 0)
+                draw_tactical_hud(
+                    frame,
+                    rtsp_url=resolved_url,
+                    fps=measured_fps,
+                    detections_count=total_det_count,
+                    is_live=not is_video_file,
+                    protocol=protocol,
+                    breach_label=active_breach_name if (time.time() - active_breach_time < 4.0) else None,
+                )
 
             # Update real-time detections registry for active session
             if session_id:
@@ -814,11 +820,11 @@ def stream_generator(
                     "count": len(formatted_dets),
                 }
 
-            # Encode frame to JPEG
+            # Encode frame to JPEG (75% quality for fast compression and high visual fidelity)
             ret, jpeg = cv2.imencode(
                 ".jpg",
                 frame,
-                [cv2.IMWRITE_JPEG_QUALITY, 80],
+                [cv2.IMWRITE_JPEG_QUALITY, 75],
             )
             if not ret:
                 continue
@@ -953,6 +959,10 @@ def get_live_stream(
         False,
         description="Overlay real-time ONNX threat detection bounding boxes",
     ),
+    draw_hud: bool = Query(
+        False,
+        description="Overlay tactical OpenCV HUD text (False recommended for lowest latency)",
+    ),
     conf_threshold: float = Query(
         0.30,
         ge=0.05,
@@ -999,6 +1009,7 @@ def get_live_stream(
             yield from stream_generator(
                 rtsp_url=rtsp_url,
                 draw_detections=draw_detections,
+                draw_hud=draw_hud,
                 conf_threshold=conf_threshold,
                 model_name=model_name,
                 fps_limit=fps,

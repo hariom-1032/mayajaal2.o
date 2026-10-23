@@ -25,7 +25,7 @@ export function CameraGrid({ selectedCameraId, onSelectCamera }: CameraGridProps
   });
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" suppressHydrationWarning>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3" suppressHydrationWarning>
       {cameras.map((camera) => {
         const suspectHit = suspectAlertMap.get(camera.id);
 
@@ -34,11 +34,10 @@ export function CameraGrid({ selectedCameraId, onSelectCamera }: CameraGridProps
             key={camera.id}
             id={camera.id}
             name={camera.name}
-            location={camera.location}
-            sector={camera.sector}
+            type={camera.type}
+            status={camera.status}
             isOnline={camera.status !== "offline"}
             streamUrl={camera.streamUrl}
-            ipAddress={camera.ipAddress}
             isSelected={camera.id === selectedCameraId}
             hasSuspectAlert={Boolean(suspectHit)}
             suspectName={suspectHit?.suspectName}
@@ -52,4 +51,3 @@ export function CameraGrid({ selectedCameraId, onSelectCamera }: CameraGridProps
 }
 
 export default CameraGrid;
-

@@ -8,86 +8,98 @@ export type CameraType =
   | "PTZ 360"
   | "Panoramic";
 
-export interface CameraHealthStats {
-  bitrate: string;
-  latencyMs: number;
-  packetLoss: string;
-}
-
+/**
+ * Core Camera entity — only 5 user-facing fields:
+ *   1. name       – human label (e.g. "CSD", "MAIN OFFICE OUTDOOR")
+ *   2. type       – sensor category
+ *   3. status     – online | offline | degraded | alert
+ *   4. channel    – NVR channel number (drives RTSP URL)
+ *   5. latitude / longitude – nullable GPS coordinates
+ *
+ * Plus internal plumbing: id, streamUrl.
+ */
 export interface Camera {
   id: string;
   name: string;
-  sector: string;
-  location: string;
-  status: CameraStatus;
+  channel?: number;
   type?: CameraType | string;
-  ipAddress?: string;
-  port?: number;
+  status: CameraStatus;
+  latitude: number | null;
+  longitude: number | null;
   streamUrl?: string;
+  /** @deprecated kept only for backend compat — not displayed in UI */
+  sector?: string;
+  /** @deprecated kept only for backend compat — not displayed in UI */
+  location?: string;
+  /** @deprecated kept only for backend compat */
+  coordinates?: [number, number];
+  /** @deprecated kept only for backend compat */
+  ipAddress?: string;
+  /** @deprecated kept only for backend compat */
+  port?: number;
+  /** @deprecated kept only for backend compat */
   isRtsp?: boolean;
-  latitude: number;
-  longitude: number;
-  coordinates?: [number, number]; // [longitude, latitude]
+  /** @deprecated kept only for backend compat */
   modelAssigned?: string;
+  /** @deprecated kept only for backend compat */
   resolution?: string;
+  /** @deprecated kept only for backend compat */
   fps?: number;
+  /** @deprecated kept only for backend compat */
   confThreshold?: number;
+  /** @deprecated kept only for backend compat */
   iouThreshold?: number;
+  /** @deprecated kept only for backend compat */
   isRecording?: boolean;
+  /** @deprecated kept only for backend compat */
   alertTriggerEnabled?: boolean;
+  /** @deprecated kept only for backend compat */
   lastActive?: string;
-  healthStats?: CameraHealthStats;
-}
-
-export interface CameraFeed {
-  cameraId: string;
-  cameraName: string;
-  feedUrl: string;
-  isLive: boolean;
-  currentAlertCount: number;
+  /** @deprecated kept only for backend compat */
+  healthStats?: { bitrate: string; latencyMs: number; packetLoss: string };
 }
 
 export interface CreateCameraInput {
   id?: string;
   name: string;
-  sector: string;
-  location: string;
-  status?: CameraStatus;
+  channel?: number;
   type?: CameraType | string;
+  status?: CameraStatus;
+  latitude?: number | null;
+  longitude?: number | null;
+  streamUrl?: string;
+
+  /** @deprecated legacy fields for backwards compatibility */
+  sector?: string;
+  location?: string;
   ipAddress?: string;
   port?: number;
-  streamUrl?: string;
-  isRtsp?: boolean;
-  latitude: number;
-  longitude: number;
   modelAssigned?: string;
   resolution?: string;
   fps?: number;
   confThreshold?: number;
   iouThreshold?: number;
-  isRecording?: boolean;
-  alertTriggerEnabled?: boolean;
 }
 
 export interface UpdateCameraInput {
   name?: string;
+  channel?: number;
+  type?: CameraType | string;
+  status?: CameraStatus;
+  latitude?: number | null;
+  longitude?: number | null;
+  streamUrl?: string;
+
+  /** @deprecated legacy fields for backwards compatibility */
   sector?: string;
   location?: string;
-  status?: CameraStatus;
-  type?: CameraType | string;
   ipAddress?: string;
   port?: number;
-  streamUrl?: string;
-  isRtsp?: boolean;
-  latitude?: number;
-  longitude?: number;
   modelAssigned?: string;
   resolution?: string;
   fps?: number;
   confThreshold?: number;
   iouThreshold?: number;
-  isRecording?: boolean;
-  alertTriggerEnabled?: boolean;
 }
 
 export interface StreamTestResult {

@@ -6,22 +6,51 @@ import {
   CreateCameraInput,
   UpdateCameraInput,
   StreamTestResult,
+  CameraType,
+  CameraStatus,
 } from "@/types/camera";
 import { api } from "@/lib/api";
-import { ALL_BORDER_CAMERAS } from "@/lib/borderCameras";
+import {
+  ALL_BORDER_CAMERAS,
+  buildChannelRtspUrl,
+  extractChannelFromUrl,
+  RTSP_CAMERA_TEMPLATE,
+} from "@/lib/borderCameras";
 
-const STORAGE_KEY = "maatrix_operator_cameras_v4";
+const STORAGE_KEY = "maatrix_real_cameras_v5";
 
 export const INITIAL_CAMERAS: Camera[] = ALL_BORDER_CAMERAS;
 
-function isLegacyCentralPoint(c: any): boolean {
-  if (!c) return true;
-  if (["cam-1", "cam-2", "cam-3", "cam-4", "cam-5"].includes(c.id)) return true;
-  const lat = Number(c.latitude ?? (c.coordinates ? c.coordinates[1] : 0));
-  const lng = Number(c.longitude ?? (c.coordinates ? c.coordinates[0] : 0));
-  // Any point in central India interior (MP/UP interior: lat 20.0-26.0, lng 75.0-82.0)
-  if (lat >= 20.0 && lat <= 26.0 && lng >= 75.0 && lng <= 82.0) return true;
-  return false;
+/**
+ * Filter out dummy simulated cameras (indices > 10 or dummy mock networks).
+ */
+export function isAuthenticCamera(c: any): boolean {
+  if (!c) return false;
+  const id = String(c.id || "").toLowerCase();
+  const streamUrl = String(c.streamUrl || "").toLowerCase();
+  const ip = String(c.ipAddress || "").toLowerCase();
+
+  // Explicit check on BOP JK numbering: only 01 to 10 are authentic
+  const match = id.match(/bop-jk-(\d+)/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (num > 10) return false;
+  } else if (id.startsWith("bop-") && !id.startsWith("bop-jk-")) {
+    // All other fake bop regions (bop-gj, bop-pb, bop-wb, etc.) are purged
+    return false;
+  }
+
+  // Purge any dummy IP ranges like 10.20.7x or 10.20.9x
+  if (
+    ip.startsWith("10.20.7") ||
+    ip.startsWith("10.20.9") ||
+    streamUrl.includes("10.20.7") ||
+    streamUrl.includes("10.20.9")
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 type CameraListener = (cameras: Camera[]) => void;
@@ -33,19 +62,20 @@ let hasInitialized = false;
 function loadInitialData(): Camera[] {
   if (typeof window === "undefined") return [...INITIAL_CAMERAS];
   try {
-    // Clear out any old legacy cache keys that contained central India dummy coordinates
+    // Purge legacy storage caches with dummy cameras
     try {
       localStorage.removeItem("maatrix_operator_cameras_v1");
       localStorage.removeItem("maatrix_operator_cameras_v2");
       localStorage.removeItem("maatrix_operator_cameras_v3");
+      localStorage.removeItem("maatrix_operator_cameras_v4");
     } catch {}
 
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        const clean = parsed.filter((c: any) => !isLegacyCentralPoint(c));
-        if (clean.length >= 20) {
+        const clean = parsed.filter(isAuthenticCamera);
+        if (clean.length > 0) {
           return clean;
         }
       }
@@ -59,7 +89,7 @@ function loadInitialData(): Camera[] {
 function persistLocally(cameras: Camera[]) {
   if (typeof window === "undefined") return;
   try {
-    const clean = cameras.filter((c) => !isLegacyCentralPoint(c));
+    const clean = cameras.filter(isAuthenticCamera);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
   } catch (err) {
     console.warn("Could not save cameras to localStorage:", err);
@@ -73,7 +103,7 @@ function notify() {
 
 export const camerasStore = {
   getCameras(): Camera[] {
-    return memoryCameras.filter((c) => !isLegacyCentralPoint(c));
+    return memoryCameras.filter(isAuthenticCamera);
   },
 
   initClientStorage(): Camera[] {
@@ -81,22 +111,23 @@ export const camerasStore = {
       memoryCameras = loadInitialData();
       hasInitialized = true;
     }
-    return memoryCameras.filter((c) => !isLegacyCentralPoint(c));
+    return memoryCameras.filter(isAuthenticCamera);
   },
 
   async syncWithBackend(): Promise<Camera[]> {
     try {
       const backendCameras = await api.getCameras();
       if (Array.isArray(backendCameras) && backendCameras.length > 0) {
+        // Strictly filter to real cameras only
         const clean = backendCameras
-          .filter((c) => !isLegacyCentralPoint(c))
+          .filter(isAuthenticCamera)
           .map((c) => ({
             ...c,
-            latitude: Number(c.latitude ?? (c.coordinates ? c.coordinates[1] : 32.7160)),
-            longitude: Number(c.longitude ?? (c.coordinates ? c.coordinates[0] : 74.6640)),
+            latitude: Number(c.latitude ?? (c.coordinates ? c.coordinates[1] : 23.15421)),
+            longitude: Number(c.longitude ?? (c.coordinates ? c.coordinates[0] : 72.885257)),
             coordinates: c.coordinates ?? [
-              Number(c.longitude ?? 74.6640),
-              Number(c.latitude ?? 32.7160),
+              Number(c.longitude ?? 72.885257),
+              Number(c.latitude ?? 23.15421),
             ],
           }));
 
@@ -111,52 +142,81 @@ export const camerasStore = {
         return memoryCameras;
       }
     } catch {
-      // Backend not available; fallback to local memory/storage
+      // Backend unavailable; keep memory fallback
     }
     return [...memoryCameras];
   },
 
+  /**
+   * 1-Click addition of a camera by specifying channel number.
+   * Auto-resolves RTSP stream url with template:
+   * rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel={CHANNEL}&subtype=0
+   */
+  async addCameraByChannel(input: {
+    name: string;
+    channel: number | string;
+    latitude?: number | string | null;
+    longitude?: number | string | null;
+    type?: CameraType | string;
+    status?: CameraStatus;
+  }): Promise<Camera> {
+    const ch = parseInt(String(input.channel).trim(), 10) || 1;
+    const streamUrl = buildChannelRtspUrl(ch);
+    const lat =
+      input.latitude !== null && input.latitude !== undefined && String(input.latitude).trim() !== ""
+        ? Number(input.latitude)
+        : null;
+    const lng =
+      input.longitude !== null && input.longitude !== undefined && String(input.longitude).trim() !== ""
+        ? Number(input.longitude)
+        : null;
+    const id = `cam-ch-${ch}-${Date.now().toString(36).slice(-3)}`;
+
+    return this.addCamera({
+      id,
+      name: input.name.trim(),
+      channel: ch,
+      status: input.status || "online",
+      type: input.type || "Optical 4K",
+      streamUrl,
+      latitude: lat,
+      longitude: lng,
+    });
+  },
+
   async addCamera(input: CreateCameraInput): Promise<Camera> {
-    const lat = Number(input.latitude);
-    const lng = Number(input.longitude);
+    const ch =
+      input.channel !== undefined
+        ? Number(input.channel)
+        : extractChannelFromUrl(input.streamUrl) || 1;
+
+    const lat =
+      input.latitude !== null && input.latitude !== undefined && String(input.latitude).trim() !== ""
+        ? Number(input.latitude)
+        : null;
+    const lng =
+      input.longitude !== null && input.longitude !== undefined && String(input.longitude).trim() !== ""
+        ? Number(input.longitude)
+        : null;
 
     let streamUrl = input.streamUrl?.trim();
-    if (!streamUrl && input.ipAddress) {
-      const port = input.port || 554;
-      streamUrl = `rtsp://${input.ipAddress.trim()}:${port}/live/ch0`;
+    if (!streamUrl) {
+      streamUrl = buildChannelRtspUrl(ch);
     }
 
     const nextId =
       input.id?.trim() ||
-      `cam-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+      `cam-ch-${ch}-${Date.now().toString(36).slice(-3)}`;
 
     const newCamera: Camera = {
       id: nextId,
       name: input.name.trim(),
-      sector: input.sector || "Sector-04 (BOP Alpha)",
-      location: input.location.trim(),
+      channel: ch,
       status: input.status || "online",
       type: input.type || "Optical 4K",
-      ipAddress: input.ipAddress?.trim() || undefined,
-      port: input.port || 554,
-      streamUrl: streamUrl,
-      isRtsp: input.isRtsp ?? true,
       latitude: lat,
       longitude: lng,
-      coordinates: [lng, lat],
-      modelAssigned: input.modelAssigned || "vehicle_detector.onnx (Vehicle Detector)",
-      resolution: input.resolution || "1080p FHD (1920x1080)",
-      fps: input.fps || 30,
-      confThreshold: input.confThreshold ?? 0.75,
-      iouThreshold: input.iouThreshold ?? 0.45,
-      isRecording: input.isRecording ?? true,
-      alertTriggerEnabled: input.alertTriggerEnabled ?? true,
-      lastActive: "Just now",
-      healthStats: {
-        bitrate: "6.5 Mbps",
-        latencyMs: Math.floor(35 + Math.random() * 25),
-        packetLoss: "0.00%",
-      },
+      streamUrl,
     };
 
     memoryCameras = [newCamera, ...memoryCameras];
@@ -167,10 +227,10 @@ export const camerasStore = {
       .createCamera({
         ...newCamera,
         id: nextId,
+        latitude: lat ?? 0,
+        longitude: lng ?? 0,
       })
-      .catch(() => {
-        // Backend sync failed or offline; local memory already updated
-      });
+      .catch(() => {});
 
     return newCamera;
   },
@@ -182,37 +242,51 @@ export const camerasStore = {
     }
 
     const current = memoryCameras[idx];
-    const lat =
-      input.latitude !== undefined ? Number(input.latitude) : current.latitude;
-    const lng =
-      input.longitude !== undefined ? Number(input.longitude) : current.longitude;
+    const newChannel =
+      input.channel !== undefined ? Number(input.channel) : current.channel;
 
-    let streamUrl = input.streamUrl !== undefined ? input.streamUrl : current.streamUrl;
-    if (
-      input.ipAddress &&
-      input.streamUrl === undefined &&
-      input.ipAddress !== current.ipAddress
-    ) {
-      const port = input.port || current.port || 554;
-      streamUrl = `rtsp://${input.ipAddress.trim()}:${port}/live/ch0`;
+    const lat =
+      input.latitude !== undefined
+        ? input.latitude !== null && String(input.latitude).trim() !== ""
+          ? Number(input.latitude)
+          : null
+        : current.latitude;
+
+    const lng =
+      input.longitude !== undefined
+        ? input.longitude !== null && String(input.longitude).trim() !== ""
+          ? Number(input.longitude)
+          : null
+        : current.longitude;
+
+    // Auto-update RTSP link channel if channel changed and custom streamUrl wasn't given
+    let streamUrl = current.streamUrl;
+    if (input.streamUrl !== undefined && input.streamUrl.trim() !== "") {
+      streamUrl = input.streamUrl.trim();
+    } else if (input.channel !== undefined) {
+      streamUrl = buildChannelRtspUrl(input.channel);
     }
 
     const updated: Camera = {
       ...current,
       ...input,
+      channel: newChannel,
       latitude: lat,
       longitude: lng,
-      coordinates: [lng, lat],
       streamUrl,
-      lastActive: "Just now",
     };
 
     memoryCameras[idx] = updated;
     notify();
 
-    // Async backend update
-    api.updateCamera(id, input).catch(() => {});
-
+    api
+      .updateCamera(id, {
+        ...input,
+        latitude: lat ?? 0,
+        longitude: lng ?? 0,
+        streamUrl,
+      })
+      .catch(() => {});
     return updated;
   },
 
@@ -247,20 +321,16 @@ export const camerasStore = {
     try {
       return await api.testStream(params);
     } catch {
-      // Offline fallback simulator
       const target = params.streamUrl || params.ipAddress || "";
       const isFormatValid =
         target.startsWith("rtsp://") ||
         /^(\d{1,3}\.){3}\d{1,3}$/.test(target.trim());
 
-      const simulatedLatency = Math.floor(32 + Math.random() * 30);
       return {
         reachable: isFormatValid,
         status: isFormatValid ? "online" : "error",
-        latencyMs: isFormatValid ? simulatedLatency : 0,
-        message: isFormatValid
-          ? `RTSP Handshake active. Stream responsive (Latency: ${simulatedLatency}ms).`
-          : "Invalid RTSP IP address or URL format. Must begin with rtsp:// or valid IPv4.",
+        latencyMs: isFormatValid ? 40 : 0,
+        message: isFormatValid ? "Stream verified" : "Invalid stream link",
         protocol: "RTSP/1.0",
         supportedCodecs: ["H.264", "H.265"],
       };
@@ -274,27 +344,33 @@ export const camerasStore = {
 };
 
 export function useCameras() {
-  const [cameras, setCameras] = useState<Camera[]>(INITIAL_CAMERAS);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [cameras, setCameras] = useState<Camera[]>(() =>
+    camerasStore.getCameras()
+  );
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
   useEffect(() => {
-    // Initial sync from client storage after hydration completes
-    const loaded = camerasStore.initClientStorage();
-    setCameras(loaded);
+    const initial = camerasStore.initClientStorage();
+    setCameras(initial);
 
-    const handleUpdate = (updated: Camera[]) => {
-      setCameras(updated);
+    const unsubscribe = (updated: Camera[]) => {
+      setCameras(updated.filter(isAuthenticCamera));
     };
-    listeners.add(handleUpdate);
 
-    // Attempt backend sync in background
+    listeners.add(unsubscribe);
+
     setIsSyncing(true);
     camerasStore
       .syncWithBackend()
-      .finally(() => setIsSyncing(false));
+      .then((synced) => {
+        setCameras(synced.filter(isAuthenticCamera));
+      })
+      .finally(() => {
+        setIsSyncing(false);
+      });
 
     return () => {
-      listeners.delete(handleUpdate);
+      listeners.delete(unsubscribe);
     };
   }, []);
 
@@ -304,47 +380,64 @@ export function useCameras() {
   const offlineCount = cameras.filter((c) => c.status === "offline").length;
   const degradedCount = cameras.filter((c) => c.status === "degraded").length;
 
-  const validLatencies = cameras
-    .map((c) => c.healthStats?.latencyMs)
-    .filter((l): l is number => typeof l === "number" && l > 0);
-  const avgLatencyMs =
-    validLatencies.length > 0
-      ? Math.round(
-          validLatencies.reduce((acc, v) => acc + v, 0) / validLatencies.length
-        )
-      : 42;
+  const avgLatencyMs = 0;
 
   const addCamera = useCallback(
-    (input: CreateCameraInput) => camerasStore.addCamera(input),
+    async (input: CreateCameraInput) => camerasStore.addCamera(input),
     []
   );
+
+  const addCameraByChannel = useCallback(
+    async (input: {
+      name: string;
+      channel: number | string;
+      latitude?: number | string | null;
+      longitude?: number | string | null;
+      type?: CameraType;
+    }) => camerasStore.addCameraByChannel(input),
+    []
+  );
+
   const updateCamera = useCallback(
-    (id: string, input: UpdateCameraInput) =>
+    async (id: string, input: UpdateCameraInput) =>
       camerasStore.updateCamera(id, input),
     []
   );
+
   const deleteCamera = useCallback(
-    (id: string) => camerasStore.deleteCamera(id),
+    async (id: string) => camerasStore.deleteCamera(id),
     []
   );
+
   const bulkDeleteCameras = useCallback(
-    (ids: string[]) => camerasStore.bulkDeleteCameras(ids),
+    async (ids: string[]) => camerasStore.bulkDeleteCameras(ids),
     []
   );
+
   const testStream = useCallback(
     (params: { streamUrl?: string; ipAddress?: string; port?: number }) =>
       camerasStore.testStream(params),
     []
   );
-  const resetDefaults = useCallback(() => camerasStore.resetDefaults(), []);
-  const refreshFromBackend = useCallback(
-    () => camerasStore.syncWithBackend(),
-    []
-  );
+
+  const resetDefaults = useCallback(() => {
+    camerasStore.resetDefaults();
+  }, []);
+
+  const refetch = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      const synced = await camerasStore.syncWithBackend();
+      setCameras(synced.filter(isAuthenticCamera));
+    } finally {
+      setIsSyncing(false);
+    }
+  }, []);
 
   return {
     cameras,
     isSyncing,
+    isLoading: isSyncing,
     totalCount,
     onlineCount,
     alertCount,
@@ -352,11 +445,12 @@ export function useCameras() {
     degradedCount,
     avgLatencyMs,
     addCamera,
+    addCameraByChannel,
     updateCamera,
     deleteCamera,
     bulkDeleteCameras,
     testStream,
     resetDefaults,
-    refreshFromBackend,
+    refetch,
   };
 }

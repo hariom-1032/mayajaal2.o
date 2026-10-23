@@ -188,7 +188,7 @@ export default function CamerasPage() {
         const matchName = cam.name.toLowerCase().includes(q);
         const matchId = cam.id.toLowerCase().includes(q);
         const matchIp = cam.ipAddress?.toLowerCase().includes(q) || false;
-        const matchLoc = cam.location.toLowerCase().includes(q);
+        const matchLoc = cam.location ? cam.location.toLowerCase().includes(q) : false;
         const matchUrl = cam.streamUrl?.toLowerCase().includes(q) || false;
         if (!matchName && !matchId && !matchIp && !matchLoc && !matchUrl) {
           return false;
@@ -223,7 +223,7 @@ export default function CamerasPage() {
         streamUrl: cam.streamUrl,
         ipAddress: cam.ipAddress,
         port: cam.port,
-      }).then((res) => {
+      }).then((res: StreamTestResult) => {
         setTestingIds((prev) => ({ ...prev, [cam.id]: res }));
       });
     }
@@ -611,7 +611,7 @@ export default function CamerasPage() {
                         <div className="font-mono text-xs font-semibold text-slate-900 flex items-center gap-1">
                           <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                           <span>
-                            {camera.latitude.toFixed(4)}°N, {camera.longitude.toFixed(4)}°E
+                            {camera.latitude != null ? camera.latitude.toFixed(4) : "—"}°N, {camera.longitude != null ? camera.longitude.toFixed(4) : "—"}°E
                           </span>
                         </div>
                       </td>
@@ -761,7 +761,7 @@ export default function CamerasPage() {
                       Lat / Long
                     </span>
                     <span className="font-semibold text-slate-800">
-                      {camera.latitude.toFixed(3)}°, {camera.longitude.toFixed(3)}°
+                      {camera.latitude != null ? camera.latitude.toFixed(3) : "—"}°, {camera.longitude != null ? camera.longitude.toFixed(3) : "—"}°
                     </span>
                   </div>
                   <div>
@@ -863,7 +863,7 @@ export default function CamerasPage() {
               <div>
                 <strong className="text-slate-500">Coordinates:</strong>{" "}
                 <span className="font-mono text-slate-700">
-                  {deletingCamera.latitude.toFixed(4)}°N, {deletingCamera.longitude.toFixed(4)}°E
+                  {deletingCamera.latitude != null ? deletingCamera.latitude.toFixed(4) : "—"}°N, {deletingCamera.longitude != null ? deletingCamera.longitude.toFixed(4) : "—"}°E
                 </span>
               </div>
               <div>
@@ -961,7 +961,7 @@ export default function CamerasPage() {
               </div>
 
               <div className="absolute top-3 right-3 bg-black/60 backdrop-blur-xs px-2.5 py-1 rounded-md text-[10px] font-mono text-slate-300">
-                LAT: {previewCamera.latitude.toFixed(4)}°N | LNG: {previewCamera.longitude.toFixed(4)}°E
+                LAT: {previewCamera.latitude != null ? previewCamera.latitude.toFixed(4) : "—"}°N | LNG: {previewCamera.longitude != null ? previewCamera.longitude.toFixed(4) : "—"}°E
               </div>
 
               <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-xs px-2.5 py-1 rounded-md text-[10px] font-mono text-slate-400">
@@ -1108,7 +1108,7 @@ function CameraCardItem({
             <div className="flex items-center gap-1.5 font-mono text-slate-700">
               <MapPin className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
               <span className="font-semibold">
-                {camera.latitude.toFixed(4)}°N, {camera.longitude.toFixed(4)}°E
+                {camera.latitude != null ? camera.latitude.toFixed(4) : "—"}°N, {camera.longitude != null ? camera.longitude.toFixed(4) : "—"}°E
               </span>
             </div>
             <button
@@ -1694,8 +1694,8 @@ function EditCameraModal({
   onTestStream: (p: { streamUrl?: string; ipAddress?: string; port?: number }) => Promise<StreamTestResult>;
 }) {
   const [name, setName] = useState(camera.name);
-  const [sector, setSector] = useState(camera.sector);
-  const [location, setLocation] = useState(camera.location);
+  const [sector, setSector] = useState(camera.sector || "");
+  const [location, setLocation] = useState(camera.location || "");
   const [type, setType] = useState<CameraType>((camera.type as any) || "Optical 4K");
   const [status, setStatus] = useState<CameraStatus>(camera.status);
 
@@ -1705,8 +1705,8 @@ function EditCameraModal({
   const [streamUrl, setStreamUrl] = useState(camera.streamUrl || "");
 
   // Lat / Long
-  const [latitude, setLatitude] = useState(camera.latitude);
-  const [longitude, setLongitude] = useState(camera.longitude);
+  const [latitude, setLatitude] = useState<number | null>(camera.latitude ?? null);
+  const [longitude, setLongitude] = useState<number | null>(camera.longitude ?? null);
 
   // Model & Params
   const [modelAssigned, setModelAssigned] = useState(camera.modelAssigned || "vehicle_detector.onnx (Vehicle Detector)");
@@ -1736,11 +1736,13 @@ function EditCameraModal({
       setErrorMessage("Please enter a valid Camera Name.");
       return;
     }
-    if (isNaN(latitude) || latitude < -90 || latitude > 90) {
+    const latNum = latitude !== null && latitude !== undefined && !isNaN(Number(latitude)) ? Number(latitude) : null;
+    const lngNum = longitude !== null && longitude !== undefined && !isNaN(Number(longitude)) ? Number(longitude) : null;
+    if (latNum !== null && (latNum < -90 || latNum > 90)) {
       setErrorMessage("Latitude must be between -90 and 90.");
       return;
     }
-    if (isNaN(longitude) || longitude < -180 || longitude > 180) {
+    if (lngNum !== null && (lngNum < -180 || lngNum > 180)) {
       setErrorMessage("Longitude must be between -180 and 180.");
       return;
     }
@@ -1751,14 +1753,14 @@ function EditCameraModal({
       await onSave(camera.id, {
         name: name.trim(),
         sector,
-        location: location.trim(),
+        location: location ? location.trim() : "",
         type,
         status,
         ipAddress: ipAddress.trim() || undefined,
         port,
         streamUrl: streamUrl.trim() || undefined,
-        latitude: Number(latitude),
-        longitude: Number(longitude),
+        latitude: latNum,
+        longitude: lngNum,
         modelAssigned,
         resolution,
         fps,
@@ -1956,9 +1958,8 @@ function EditCameraModal({
                 <input
                   type="number"
                   step="0.0001"
-                  required
-                  value={latitude}
-                  onChange={(e) => setLatitude(parseFloat(e.target.value))}
+                  value={latitude ?? ""}
+                  onChange={(e) => setLatitude(e.target.value === "" ? null : parseFloat(e.target.value))}
                   className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none"
                 />
               </div>
@@ -1970,9 +1971,8 @@ function EditCameraModal({
                 <input
                   type="number"
                   step="0.0001"
-                  required
-                  value={longitude}
-                  onChange={(e) => setLongitude(parseFloat(e.target.value))}
+                  value={longitude ?? ""}
+                  onChange={(e) => setLongitude(e.target.value === "" ? null : parseFloat(e.target.value))}
                   className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none"
                 />
               </div>
