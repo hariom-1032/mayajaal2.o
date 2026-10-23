@@ -1,5 +1,157 @@
 [
   {
+    "id": "UNK-B324",
+    "timestamp": "2026-10-23 16:27:58",
+    "iso_timestamp": "2026-10-23T16:27:58.621286",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=3&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RTSP Live Stream"
+    ],
+    "confidence": 98.5,
+    "bbox": [
+      1055.93,
+      362.63,
+      1079.79,
+      391.4
+    ],
+    "photo_filename": "unknown_UNK-B324_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792769278621.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-B324_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792769278621.jpg",
+    "seen_count": 14,
+    "last_seen": "2026-10-23 16:28:59",
+    "_last_seen_sec": 1792769339.6620414,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
+    "id": "UNK-13AF",
+    "timestamp": "2026-10-23 16:26:23",
+    "iso_timestamp": "2026-10-23T16:26:23.094545",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=5&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RTSP Live Stream"
+    ],
+    "confidence": 83.1,
+    "bbox": [
+      40.99,
+      864.29,
+      93.77,
+      933.3
+    ],
+    "photo_filename": "unknown_UNK-13AF_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=5&subtype=0_1792769183094.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-13AF_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=5&subtype=0_1792769183094.jpg",
+    "seen_count": 1,
+    "last_seen": "2026-10-23 16:26:23",
+    "_last_seen_sec": 1792769183.0945458,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
+    "id": "UNK-63E3",
+    "timestamp": "2026-10-23 16:24:50",
+    "iso_timestamp": "2026-10-23T16:24:50.686808",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RTSP Live Stream"
+    ],
+    "confidence": 98.1,
+    "bbox": [
+      1255.63,
+      202.05,
+      1302.4,
+      273.74
+    ],
+    "photo_filename": "unknown_UNK-63E3_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792769090686.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-63E3_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792769090686.jpg",
+    "seen_count": 1,
+    "last_seen": "2026-10-23 16:24:50",
+    "_last_seen_sec": 1792769090.6868088,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
+    "id": "UNK-42C9",
+    "timestamp": "2026-10-23 15:55:52",
+    "iso_timestamp": "2026-10-23T15:55:52.872789",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=4&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RATION STORE",
+      "RTSP Live Stream"
+    ],
+    "confidence": 99.7,
+    "bbox": [
+      827.9,
+      387.01,
+      877.93,
+      444.43
+    ],
+    "photo_filename": "unknown_UNK-42C9_bop-jk-08_1792767352872.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-42C9_bop-jk-08_1792767352872.jpg",
+    "seen_count": 16,
+    "last_seen": "2026-10-23 16:25:43",
+    "_last_seen_sec": 1792769143.369656,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
+    "id": "UNK-3A7D",
+    "timestamp": "2026-10-23 15:32:16",
+    "iso_timestamp": "2026-10-23T15:32:16.628070",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=3&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RATION STORE",
+      "RTSP Live Stream"
+    ],
+    "confidence": 99.5,
+    "bbox": [
+      1105.74,
+      355.92,
+      1126.87,
+      384.34
+    ],
+    "photo_filename": "unknown_UNK-3A7D_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=3&subtype=0_1792765936628.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-3A7D_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=3&subtype=0_1792765936628.jpg",
+    "seen_count": 158,
+    "last_seen": "2026-10-23 16:27:52",
+    "_last_seen_sec": 1792769272.7513566,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
+    "id": "UNK-5206",
+    "timestamp": "2026-10-23 15:24:50",
+    "iso_timestamp": "2026-10-23T15:24:50.617651",
+    "camera_id": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0",
+    "camera_name": "RTSP Live Stream",
+    "cameras_seen": [
+      "RTSP Live Stream"
+    ],
+    "confidence": 99.0,
+    "bbox": [
+      1073.24,
+      290.01,
+      1126.57,
+      368.04
+    ],
+    "photo_filename": "unknown_UNK-5206_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792765490617.jpg",
+    "photo_url": "/api/faces/unknown/photo/unknown_UNK-5206_rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0_1792765490617.jpg",
+    "seen_count": 1,
+    "last_seen": "2026-10-23 15:24:50",
+    "_last_seen_sec": 1792765490.6176517,
+    "status": "unreviewed",
+    "notes": "",
+    "enrolled_name": null
+  },
+  {
     "id": "UNK-0812",
     "timestamp": "2026-10-19 23:54:57",
     "iso_timestamp": "2026-10-19T23:54:57.705875",

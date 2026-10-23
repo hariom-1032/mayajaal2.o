@@ -5,15 +5,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-# Ensure CUDA and cuDNN DLLs (e.g. from PyTorch lib) are discoverable on Windows
-if os.name == "nt":
-    try:
-        import torch
-        torch_lib = Path(torch.__file__).parent / "lib"
-        if torch_lib.exists():
-            os.add_dll_directory(str(torch_lib))
-    except Exception:
-        pass
+# Ensure CUDA and cuDNN DLLs are discoverable on Windows
+from app.utils.cuda_setup import (
+    setup_cuda_dll_directories,
+    get_cuda_device_count,
+    get_cuda_device_name,
+)
+setup_cuda_dll_directories()
 
 import numpy as np
 import onnxruntime as ort
@@ -112,8 +110,25 @@ class ONNXEngine:
 
         if requested_device in ("auto", "cuda", "gpu"):
             if "CUDAExecutionProvider" in available:
+                cuda_count = get_cuda_device_count()
+                req_id = getattr(settings, "cuda_device_id", 0)
+                # Map device_id safely: CUDA only indexes NVIDIA devices (starting at 0).
+                # If user specifies device 1 (referencing Windows Task Manager 'GPU 1'),
+                # map to device 0 if only 1 NVIDIA GPU exists.
+                if cuda_count > 0 and req_id >= cuda_count:
+                    resolved_device_id = 0
+                    device_name = get_cuda_device_name(0)
+                    logger.info(
+                        "Requested CUDA device_id=%d mapped to device 0: %s (1 NVIDIA GPU present)",
+                        req_id,
+                        device_name,
+                    )
+                else:
+                    resolved_device_id = req_id
+                    device_name = get_cuda_device_name(resolved_device_id)
+
                 cuda_options: dict = {
-                    "device_id": 0,
+                    "device_id": resolved_device_id,
                     # kNextPowerOfTwo reduces allocator fragmentation on variable batch sizes
                     "arena_extend_strategy": "kNextPowerOfTwo",
                     # EXHAUSTIVE search finds the fastest cuDNN conv algorithm per shape
@@ -122,15 +137,15 @@ class ONNXEngine:
                     "do_copy_in_default_stream": True,
                 }
                 if self.gpu_mem_limit_bytes is not None:
-                    # Only set a hard cap when explicitly configured; otherwise
-                    # ORT uses all available VRAM (the desired behaviour on a 12 GB GPU).
                     cuda_options["gpu_mem_limit"] = self.gpu_mem_limit_bytes
                     _limit_log = f"{self.gpu_mem_limit_bytes / 1024 ** 3:.1f} GB"
                 else:
                     _limit_log = "unlimited"
                 providers.append(("CUDAExecutionProvider", cuda_options))
                 logger.info(
-                    "CUDAExecutionProvider selected | gpu_mem_limit=%s | cudnn_conv_algo=EXHAUSTIVE",
+                    "CUDAExecutionProvider selected | device_id=%d (%s) | gpu_mem_limit=%s | cudnn_conv_algo=EXHAUSTIVE",
+                    resolved_device_id,
+                    device_name,
                     _limit_log,
                 )
             elif requested_device in ("cuda", "gpu"):

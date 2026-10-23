@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     model_directory: Path = BASE_DIR / "models"
     max_models: int = Field(default=4, ge=1, le=4)
     device: str = Field(default="auto", description="Execution device: 'auto', 'cuda', or 'cpu'")
+    cuda_device_id: int = Field(default=0, ge=0, description="CUDA device ID (0 for first NVIDIA GPU).")
     batch_size: int = Field(default=4, ge=2, le=6, description="Default ONNX batch inference size (2 to 6 frames at once).")
 
     # ONNX Runtime CPU configuration

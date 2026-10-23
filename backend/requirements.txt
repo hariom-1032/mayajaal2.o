@@ -2,7 +2,7 @@ annotated-doc==0.0.5
 # UniFace: ONNX-based face detection (SCRFD/RetinaFace) + recognition (ArcFace/AdaFace)
 uniface>=0.2.0
 # ByteTrack multi-object tracking
-supervision>=0.21.0
+supervision>=0.25.0,<0.31.0
 lapx>=0.5.2
 annotated-types==0.8.0
 anyio==4.15.1
@@ -17,7 +17,11 @@ idna==3.19
 ml_dtypes==0.6.0
 numpy==2.5.3
 onnx==1.22.0
-onnxruntime-gpu>=1.20.0
+onnxruntime-gpu==1.19.2
+nvidia-cublas-cu12>=12.1.0
+nvidia-cudnn-cu12>=9.0.0
+nvidia-cuda-nvrtc-cu12>=12.1.0
+transformers>=4.40.0
 opencv-python==5.0.0.93
 packaging==26.3
 protobuf==7.36.1

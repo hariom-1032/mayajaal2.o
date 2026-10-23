@@ -1,7 +1,7 @@
 [
   {
     "id": "bop-jk-01",
-    "name": "Audi 1",
+    "name": "CSD",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Pillar 42 \u2014 Forward Barbed Fence",
     "status": "online",
@@ -12,9 +12,9 @@
       72.885257,
       23.15421
     ],
-    "ipAddress": "10.20.72.101",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://localhost:8554/cam2",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=1&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "4K UHD (3840x2160)",
@@ -32,7 +32,7 @@
   },
   {
     "id": "bop-jk-02",
-    "name": "Audi 2",
+    "name": "MAIN OFFICE OUTDOOR",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Joint Check Post High Mast-01",
     "status": "online",
@@ -43,9 +43,9 @@
       72.885263,
       23.153804
     ],
-    "ipAddress": "10.20.72.102",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://localhost:8554/cam1",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=2&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "4K Panoramic (4096x1800)",
@@ -63,7 +63,7 @@
   },
   {
     "id": "bop-jk-03",
-    "name": "Audi 3",
+    "name": "MI ROOM",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Observation Bunker B-12",
     "status": "alert",
@@ -74,9 +74,9 @@
       72.88526,
       23.153398
     ],
-    "ipAddress": "10.20.72.59",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://10.20.72.59:8554/cam3",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=3&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p FHD (1920x1080)",
@@ -94,7 +94,7 @@
   },
   {
     "id": "bop-jk-04",
-    "name": "SITAICS",
+    "name": "MAIN OFFICE INDOOR",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Forward Trench Line #3",
     "status": "alert",
@@ -105,9 +105,9 @@
       72.886619,
       23.153357
     ],
-    "ipAddress": "10.20.72.104",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://10.20.72.59:8554/cam4",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=4&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p Thermal",
@@ -125,7 +125,7 @@
   },
   {
     "id": "bop-jk-05",
-    "name": "SASET",
+    "name": "SP HQ and D KOTE",
     "sector": "Sector-03 (Jammu - Gajansoo)",
     "location": "Watchtower 14 Remote Turret",
     "status": "alert",
@@ -136,9 +136,9 @@
       72.885683,
       23.153343
     ],
-    "ipAddress": "10.20.72.105",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://10.20.72.59:8554/cam5",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=5&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "4K UHD (3840x2160)",
@@ -156,7 +156,7 @@
   },
   {
     "id": "bop-jk-06",
-    "name": "Chenab Riverine Bluff FLIR Thermal",
+    "name": "KOTE REAR ENTRY & ARMOUR SHOP A KOTE",
     "sector": "Sector-03 (Akhnoor - Chenab)",
     "location": "Akhnoor River Bluff High Mast Post",
     "status": "alert",
@@ -167,9 +167,9 @@
       74.678,
       32.748
     ],
-    "ipAddress": "10.20.72.106",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://10.20.72.59:8554/cam6",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=6&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p Thermal",
@@ -187,7 +187,7 @@
   },
   {
     "id": "bop-jk-07",
-    "name": "Suhagni Nullah Culvert IR Sensor",
+    "name": "RP GATE",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Drainage Crossing Culvert C-08",
     "status": "degraded",
@@ -198,9 +198,9 @@
       74.685,
       32.705
     ],
-    "ipAddress": "10.20.72.107",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://admin:pass@10.20.72.107:554/live/ch0",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=7&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p FHD (1920x1080)",
@@ -209,7 +209,7 @@
     "iouThreshold": 0.4,
     "isRecording": true,
     "alertTriggerEnabled": false,
-    "lastActive": "5 mins ago",
+    "lastActive": "Just now",
     "healthStats": {
       "bitrate": "2.4 Mbps",
       "latencyMs": 135,
@@ -218,7 +218,7 @@
   },
   {
     "id": "bop-jk-08",
-    "name": "Chhatha Jagir Optical 4K Tower",
+    "name": "RATION STORE",
     "sector": "Sector-03 (Jammu - Gajansoo)",
     "location": "Perimeter Mast Tower 07",
     "status": "online",
@@ -229,9 +229,9 @@
       74.684,
       32.756
     ],
-    "ipAddress": "10.20.72.108",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://admin:pass@10.20.72.108:554/live/ch0",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=8&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "4K UHD (3840x2160)",
@@ -249,7 +249,7 @@
   },
   {
     "id": "bop-jk-09",
-    "name": "Makwal Tawi River Island Patrol Node",
+    "name": "PTZ CAM A COY",
     "sector": "Sector-04 (Jammu - Tawi Riverine)",
     "location": "Tawi Sandbar Observation Point",
     "status": "online",
@@ -260,9 +260,9 @@
       74.688,
       32.673
     ],
-    "ipAddress": "10.20.72.109",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://admin:pass@10.20.72.109:554/live/ch0",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=9&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p FHD (1920x1080)",
@@ -271,7 +271,7 @@
     "iouThreshold": 0.45,
     "isRecording": true,
     "alertTriggerEnabled": true,
-    "lastActive": "1 min ago",
+    "lastActive": "Just now",
     "healthStats": {
       "bitrate": "5.4 Mbps",
       "latencyMs": 44,
@@ -280,7 +280,7 @@
   },
   {
     "id": "bop-jk-10",
-    "name": "Pillar 38 Checkpost ANPR Scanner",
+    "name": "C KOTE B KOTE & KADDI ROOM",
     "sector": "Sector-04 (Jammu - RS Pura)",
     "location": "Security Gate Entry Axis",
     "status": "online",
@@ -291,9 +291,9 @@
       74.667,
       32.695
     ],
-    "ipAddress": "10.20.72.110",
+    "ipAddress": "142.67.45.150",
     "port": 554,
-    "streamUrl": "rtsp://admin:pass@10.20.72.110:554/live/ch0",
+    "streamUrl": "rtsp://admin:Admin123@142.67.45.150:554/cam/realmonitor?channel=10&subtype=0",
     "isRtsp": true,
     "modelAssigned": "vehicle_detector.onnx (Vehicle Detector)",
     "resolution": "1080p FHD (1920x1080)",

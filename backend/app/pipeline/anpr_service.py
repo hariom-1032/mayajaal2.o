@@ -71,21 +71,24 @@ class TrOCRPlateReader:
             logger.warning("EasyOCR init exception: %s", exc)
             self.easyocr_reader = None
 
-        # TrOCR is secondary fallback — only load if transformers is available
+        # TrOCR is secondary fallback — load in background thread to avoid blocking server startup
         if _TRANSFORMERS_AVAILABLE:
-            try:
-                logger.info("Initializing TrOCRPlateReader on device: %s", self.device)
-                tokenizer = RobertaTokenizer.from_pretrained(model_name)
-                feature_extractor = AutoImageProcessor.from_pretrained(model_name)
-                self.processor = TrOCRProcessor(image_processor=feature_extractor, tokenizer=tokenizer)
-                self.model = VisionEncoderDecoderModel.from_pretrained(model_name)
-                self.model.to(self.device)
-                self.model.eval()
-                logger.info("TrOCRPlateReader successfully loaded on %s", self.device)
-            except Exception as trocr_err:
-                logger.warning("TrOCR model load failed (will use EasyOCR only): %s", trocr_err)
-                self.processor = None
-                self.model = None
+            def _load_trocr_bg():
+                try:
+                    logger.info("Initializing TrOCRPlateReader in background on device: %s", self.device)
+                    tokenizer = RobertaTokenizer.from_pretrained(model_name)
+                    feature_extractor = AutoImageProcessor.from_pretrained(model_name)
+                    self.processor = TrOCRProcessor(image_processor=feature_extractor, tokenizer=tokenizer)
+                    self.model = VisionEncoderDecoderModel.from_pretrained(model_name)
+                    self.model.to(self.device)
+                    self.model.eval()
+                    logger.info("TrOCRPlateReader successfully loaded on %s", self.device)
+                except Exception as trocr_err:
+                    logger.warning("TrOCR model load failed (will use EasyOCR only): %s", trocr_err)
+                    self.processor = None
+                    self.model = None
+
+            threading.Thread(target=_load_trocr_bg, daemon=True, name="TrOCRLoader").start()
         else:
             logger.info("TrOCR disabled — transformers library not available. Using EasyOCR only.")
 
