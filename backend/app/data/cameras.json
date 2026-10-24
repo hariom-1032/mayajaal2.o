@@ -3,14 +3,14 @@
     "id": "bop-jk-01",
     "name": "CSD",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Pillar 42 \u2014 Forward Barbed Fence",
-    "status": "online",
+    "location": "SVL ROOM",
+    "status": "alert",
     "type": "Optical 4K",
-    "latitude": 23.15421,
-    "longitude": 72.885257,
+    "latitude": 23.229944,
+    "longitude": 72.708799,
     "coordinates": [
-      72.885257,
-      23.15421
+      72.708799,
+      23.229944
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -34,14 +34,14 @@
     "id": "bop-jk-02",
     "name": "MAIN OFFICE OUTDOOR",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Joint Check Post High Mast-01",
+    "location": "SVL ROOM",
     "status": "online",
     "type": "Panoramic",
-    "latitude": 23.153804,
-    "longitude": 72.885263,
+    "latitude": 23.230034,
+    "longitude": 72.708789,
     "coordinates": [
-      72.885263,
-      23.153804
+      72.708789,
+      23.230034
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -65,14 +65,14 @@
     "id": "bop-jk-03",
     "name": "MI ROOM",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Observation Bunker B-12",
+    "location": "MI ROOM",
     "status": "alert",
     "type": "PTZ 360",
-    "latitude": 23.153398,
-    "longitude": 72.88526,
+    "latitude": 23.22989,
+    "longitude": 72.708813,
     "coordinates": [
-      72.88526,
-      23.153398
+      72.708813,
+      23.22989
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -96,14 +96,14 @@
     "id": "bop-jk-04",
     "name": "MAIN OFFICE INDOOR",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Forward Trench Line #3",
+    "location": "SVL ROOM",
     "status": "alert",
     "type": "Thermal FLIR",
-    "latitude": 23.153357,
-    "longitude": 72.886619,
+    "latitude": 23.230102,
+    "longitude": 72.708823,
     "coordinates": [
-      72.886619,
-      23.153357
+      72.708823,
+      23.230102
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -125,16 +125,16 @@
   },
   {
     "id": "bop-jk-05",
-    "name": "SP HQ and D KOTE",
+    "name": "SP HQ AND D KOTE",
     "sector": "Sector-03 (Jammu - Gajansoo)",
-    "location": "Watchtower 14 Remote Turret",
+    "location": "KOTE",
     "status": "alert",
     "type": "Optical 4K",
-    "latitude": 23.153343,
-    "longitude": 72.885683,
+    "latitude": 23.230106,
+    "longitude": 72.707813,
     "coordinates": [
-      72.885683,
-      23.153343
+      72.707813,
+      23.230106
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -156,16 +156,16 @@
   },
   {
     "id": "bop-jk-06",
-    "name": "KOTE REAR ENTRY & ARMOUR SHOP A KOTE",
+    "name": "KOTE REAR ENTRY ARMOUR SHOP AND A KOTE",
     "sector": "Sector-03 (Akhnoor - Chenab)",
-    "location": "Akhnoor River Bluff High Mast Post",
+    "location": "KOTE",
     "status": "alert",
     "type": "Thermal FLIR",
-    "latitude": 32.748,
-    "longitude": 74.678,
+    "latitude": 23.230387,
+    "longitude": 72.707506,
     "coordinates": [
-      74.678,
-      32.748
+      72.707506,
+      23.230387
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -189,14 +189,14 @@
     "id": "bop-jk-07",
     "name": "RP GATE",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Drainage Crossing Culvert C-08",
-    "status": "degraded",
+    "location": "RP GATE 01",
+    "status": "alert",
     "type": "Night Vision / IR",
-    "latitude": 32.705,
-    "longitude": 74.685,
+    "latitude": 23.23127,
+    "longitude": 72.709568,
     "coordinates": [
-      74.685,
-      32.705
+      72.709568,
+      23.23127
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -220,14 +220,14 @@
     "id": "bop-jk-08",
     "name": "RATION STORE",
     "sector": "Sector-03 (Jammu - Gajansoo)",
-    "location": "Perimeter Mast Tower 07",
+    "location": "RATION STORE",
     "status": "online",
     "type": "Optical 4K",
-    "latitude": 32.756,
-    "longitude": 74.684,
+    "latitude": 23.229333,
+    "longitude": 72.708813,
     "coordinates": [
-      74.684,
-      32.756
+      72.708813,
+      23.229333
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -251,14 +251,14 @@
     "id": "bop-jk-09",
     "name": "PTZ CAM A COY",
     "sector": "Sector-04 (Jammu - Tawi Riverine)",
-    "location": "Tawi Sandbar Observation Point",
+    "location": "MT AREA",
     "status": "online",
     "type": "PTZ 360",
-    "latitude": 32.673,
-    "longitude": 74.688,
+    "latitude": 23.229135,
+    "longitude": 72.707216,
     "coordinates": [
-      74.688,
-      32.673
+      72.707216,
+      23.229135
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,
@@ -280,16 +280,16 @@
   },
   {
     "id": "bop-jk-10",
-    "name": "C KOTE B KOTE & KADDI ROOM",
+    "name": "C KOTE B KOTE AND KADDI ROOM",
     "sector": "Sector-04 (Jammu - RS Pura)",
-    "location": "Security Gate Entry Axis",
+    "location": "KOTE",
     "status": "online",
     "type": "ANPR Dedicated",
-    "latitude": 32.695,
-    "longitude": 74.667,
+    "latitude": 23.230067,
+    "longitude": 72.707915,
     "coordinates": [
-      74.667,
-      32.695
+      72.707915,
+      23.230067
     ],
     "ipAddress": "142.67.45.150",
     "port": 554,

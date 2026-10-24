@@ -1,0 +1,222 @@
+{
+  "type": "FeatureCollection",
+  "name": "camlocations",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70879898050227,
+          23.229943785115797
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-1",
+        "channel": 1,
+        "name": "CSD",
+        "location": "SVL ROOM",
+        "type": "CAMERA",
+        "title": "Channel 1: CSD",
+        "longitude": 72.70879898050227,
+        "latitude": 23.229943785115797,
+        "markerColor": "#10b981"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70878893823571,
+          23.230034214022602
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-2",
+        "channel": 2,
+        "name": "MAIN OFFICE OUTDOOR",
+        "location": "SVL ROOM",
+        "type": "CAMERA",
+        "title": "Channel 2: MAIN OFFICE OUTDOOR",
+        "longitude": 72.70878893823571,
+        "latitude": 23.230034214022602,
+        "markerColor": "#10b981"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70881303823815,
+          23.229890265398907
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-3",
+        "channel": 3,
+        "name": "MI ROOM",
+        "location": "MI ROOM",
+        "type": "CAMERA",
+        "title": "Channel 3: MI ROOM",
+        "longitude": 72.70881303823815,
+        "latitude": 23.229890265398907,
+        "markerColor": "#ef4444"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.7088230796064,
+          23.230102496697164
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-4",
+        "channel": 4,
+        "name": "MAIN OFFICE OUTDOOR",
+        "location": "SVL ROOM",
+        "type": "CAMERA",
+        "title": "Channel 4: MAIN OFFICE OUTDOOR",
+        "longitude": 72.7088230796064,
+        "latitude": 23.230102496697164,
+        "markerColor": "#ef4444"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70781290340815,
+          23.230106188276235
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-5",
+        "channel": 5,
+        "name": "SP HQ AND D KOTE",
+        "location": "KOTE",
+        "type": "CAMERA",
+        "title": "Channel 5: SP HQ AND D KOTE",
+        "longitude": 72.70781290340815,
+        "latitude": 23.230106188276235,
+        "markerColor": "#ef4444"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70750563286856,
+          23.230386701760338
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-6",
+        "channel": 6,
+        "name": "KOTE REAR ENTRY ARMOUR SHOP AND A KOTE",
+        "location": "KOTE",
+        "type": "CAMERA",
+        "title": "Channel 6: KOTE REAR ENTRY ARMOUR SHOP AND A KOTE",
+        "longitude": 72.70750563286856,
+        "latitude": 23.230386701760338,
+        "markerColor": "#ef4444"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70956751797391,
+          23.2312703893453
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-7",
+        "channel": 7,
+        "name": "RP GATE",
+        "location": "RP GATE 01",
+        "type": "CAMERA",
+        "title": "Channel 7: RP GATE",
+        "longitude": 72.70956751797391,
+        "latitude": 23.2312703893453,
+        "markerColor": "#f59e0b"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70881303823815,
+          23.229333369818946
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-8",
+        "channel": 8,
+        "name": "RATION STORE",
+        "location": "RATION STORE",
+        "type": "CAMERA",
+        "title": "Channel 8: RATION STORE",
+        "longitude": 72.70881303823815,
+        "latitude": 23.229333369818946,
+        "markerColor": "#10b981"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.70721643733086,
+          23.229135457955813
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-9",
+        "channel": 9,
+        "name": "PTZ CAM A COY",
+        "location": "MT AREA",
+        "type": "PTZ",
+        "title": "Channel 9: PTZ CAM A COY",
+        "longitude": 72.70721643733086,
+        "latitude": 23.229135457955813,
+        "markerColor": "#10b981"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          72.7079153266219,
+          23.230067432469195
+        ]
+      },
+      "properties": {
+        "id": "cam-ch-10",
+        "channel": 10,
+        "name": "C KOTE B KOTE AND KADDI ROOM",
+        "location": "KOTE",
+        "type": "CAMERA",
+        "title": "Channel 10: C KOTE B KOTE AND KADDI ROOM",
+        "longitude": 72.7079153266219,
+        "latitude": 23.230067432469195,
+        "markerColor": "#10b981"
+      }
+    }
+  ]
+}

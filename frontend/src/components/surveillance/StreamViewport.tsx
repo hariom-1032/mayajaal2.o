@@ -9,6 +9,8 @@ interface StreamViewportProps {
   label?: string;
   /** Unique key to force-remount the <img> element. */
   streamKey?: number;
+  /** Real-time output FPS measured from stream pipeline. */
+  fps?: number | null;
   /** Callback when image fails to load. */
   onError?: () => void;
   /** Callback when image loads successfully. */
@@ -29,6 +31,7 @@ function StreamViewportInner({
   src,
   label,
   streamKey = 0,
+  fps,
   onError,
   onLoad,
 }: StreamViewportProps) {
@@ -54,43 +57,27 @@ function StreamViewportInner({
     return () => clearInterval(id);
   }, []);
 
-  // ── FPS counter: measure MJPEG frame load rate ──
+  // ── Clean up MJPEG stream image on unmount or src change to release Chromium HTTP sockets ──
   useEffect(() => {
-    if (!src) return;
-
-    let frameCount = 0;
-    let lastTime = performance.now();
-    let rafId: number;
-
-    const tick = () => {
-      const now = performance.now();
-      const elapsed = now - lastTime;
-      if (elapsed >= 1000) {
-        const fps = Math.round((frameCount * 1000) / elapsed);
-        if (fpsRef.current) {
-          fpsRef.current.textContent = `${fps} FPS`;
-        }
-        frameCount = 0;
-        lastTime = now;
-      }
-      rafId = requestAnimationFrame(tick);
-    };
-
-    // Count loads on the MJPEG <img>. Each new JPEG frame from the
-    // multipart stream fires the `load` event.
-    const img = imgRef.current;
-    const onFrame = () => {
-      frameCount++;
-    };
-    img?.addEventListener("load", onFrame);
-
-    rafId = requestAnimationFrame(tick);
-
+    const imgEl = imgRef.current;
     return () => {
-      cancelAnimationFrame(rafId);
-      img?.removeEventListener("load", onFrame);
+      if (imgEl) {
+        // Explicitly clearing src terminates the browser's persistent multipart HTTP/1.1 TCP connection
+        imgEl.src = "";
+      }
     };
-  }, [src]);
+  }, [src, streamKey]);
+
+  // ── FPS counter: display pipeline/render FPS ──
+  useEffect(() => {
+    if (fpsRef.current) {
+      if (typeof fps === "number" && fps > 0) {
+        fpsRef.current.textContent = `${fps.toFixed(1)} FPS`;
+      } else if (!src) {
+        fpsRef.current.textContent = `-- FPS`;
+      }
+    }
+  }, [fps, src]);
 
   const handleError = useCallback(() => {
     onError?.();

@@ -1,5 +1,6 @@
 import { ConnectionStatus } from "@/components/status/connectionstatus";
 import { LiveSurveillanceConsole } from "@/components/surveillance/LiveSurveillanceConsole";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 
 export default function LivePage() {
   return (
@@ -21,8 +22,10 @@ export default function LivePage() {
         </div>
       </div>
 
-      {/* Industrial Minimalist Surveillance Console */}
-      <LiveSurveillanceConsole />
+      {/* Industrial Minimalist Surveillance Console with Crash Protection */}
+      <ErrorBoundary fallbackTitle="Live Surveillance Console Recovered">
+        <LiveSurveillanceConsole />
+      </ErrorBoundary>
     </div>
   );
 }

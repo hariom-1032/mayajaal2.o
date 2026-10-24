@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useCameras } from "@/lib/camerasStore";
-import { useBackendStatus } from "@/lib/hooks/useBackendStatus";
 import { Camera as CameraType } from "@/types/camera";
 import { StreamViewport } from "./StreamViewport";
 import AddCameraModal from "@/components/cameras/AddCameraModal";
@@ -23,6 +22,7 @@ import {
   MapPin,
   Wifi,
   Sparkles,
+  Activity,
 } from "lucide-react";
 
 /** Build the backend MJPEG stream URL (proxied Next.js → FastAPI). */
@@ -30,23 +30,25 @@ function buildStreamUrl(
   rtspUrl: string,
   drawDetections: boolean,
   enableFaceBiometrics: boolean,
-  sessionId?: string
+  sessionId?: string,
+  cameraId?: string
 ): string {
+  const isAi = Boolean(drawDetections);
   const params = new URLSearchParams({
     rtsp_url: rtspUrl,
-    draw_detections: String(drawDetections),
-    enable_face_recognition: String(enableFaceBiometrics),
+    draw_detections: String(isAi),
+    enable_face_recognition: String(isAi && enableFaceBiometrics),
     enable_vehicle_detection: "false",
     fps: "20",
     _t: String(Date.now()),
   });
   if (sessionId) params.set("session_id", sessionId);
+  if (cameraId) params.set("camera_id", cameraId);
   return `/api/backend/stream/live?${params.toString()}`;
 }
 
 export function LiveSurveillanceConsole() {
   const { cameras } = useCameras();
-  const { isOnline } = useBackendStatus();
 
   // Selected camera state
   const [selectedCamera, setSelectedCamera] = useState<CameraType | null>(null);
@@ -56,6 +58,13 @@ export function LiveSurveillanceConsole() {
   const [streamKey, setStreamKey] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
+
+  // Viewport display frame size: "compact" (70% width, 30% smaller to fit screen without scrolling) or "full" (100% wide)
+  const [frameSize, setFrameSize] = useState<"compact" | "full">("compact");
+
+  // Real-time telemetry (FPS & Latency)
+  const [streamFps, setStreamFps] = useState<number | null>(null);
+  const [streamLatency, setStreamLatency] = useState<number | null>(null);
 
   // AI & Stream mode toggles
   const [aiMode, setAiMode] = useState<"raw" | "inference">("inference");
@@ -132,26 +141,54 @@ export function LiveSurveillanceConsole() {
     }
   }, []);
 
-  // Connect to a camera stream
+  // Connect to a camera stream with socket cleanup and race condition prevention
   const connectToStream = useCallback(
     (targetUrl: string, camName?: string) => {
       if (!targetUrl) return;
+
+      // 1. Immediately signal backend to stop previous session
+      const oldSid = sessionIdRef.current;
+      if (oldSid) {
+        fetch(
+          `/api/backend/stream/live/stop?session_id=${encodeURIComponent(oldSid)}`,
+          { method: "DELETE" }
+        ).catch(() => {});
+      }
+
+      // 2. Generate new unique session ID
+      const newSid =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2);
+      sessionIdRef.current = newSid;
+
+      // 3. Temporarily clear active source to unbind old Chromium HTTP socket
+      setActiveMjpegSrc(null);
+      setStreamFps(null);
+      setStreamLatency(null);
+
       const drawDetections = aiMode === "inference";
       const src = buildStreamUrl(
         targetUrl,
         drawDetections,
         enableFaceBiometrics,
-        sessionIdRef.current
+        newSid,
+        selectedCamera?.id
       );
+
       setRtspUrl(targetUrl);
       setRtspInputValue(targetUrl);
-      setActiveMjpegSrc(src);
       setIsStreamActive(true);
       setStreamError(false);
-      setStreamKey((k) => k + 1);
       setStatusMessage(camName ? `Viewing: ${camName}` : "Connected to stream");
+
+      // 4. Yield to browser render loop before mounting new MJPEG connection
+      requestAnimationFrame(() => {
+        setActiveMjpegSrc(src);
+        setStreamKey((k) => k + 1);
+      });
     },
-    [aiMode, enableFaceBiometrics]
+    [aiMode, enableFaceBiometrics, selectedCamera?.id]
   );
 
   // Switch camera selection
@@ -169,25 +206,91 @@ export function LiveSurveillanceConsole() {
     [connectToStream]
   );
 
-  // Re-sync stream when AI mode or toggles change
-  useEffect(() => {
-    if (isStreamActive && rtspUrl) {
-      const drawDetections = aiMode === "inference";
-      const src = buildStreamUrl(
-        rtspUrl,
-        drawDetections,
-        enableFaceBiometrics,
-        sessionIdRef.current
-      );
-      setActiveMjpegSrc(src);
-      setStreamKey((k) => k + 1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiMode, enableFaceBiometrics]);
+  // Switch between RAW and AI INFERENCE modes with socket reset
+  const handleSwitchAiMode = useCallback(
+    (newMode: "raw" | "inference") => {
+      setAiMode(newMode);
+      if (isStreamActive && rtspUrl) {
+        const oldSid = sessionIdRef.current;
+        if (oldSid) {
+          fetch(
+            `/api/backend/stream/live/stop?session_id=${encodeURIComponent(oldSid)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+        }
+        const newSid =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+        sessionIdRef.current = newSid;
+
+        // Clean unbind old socket
+        setActiveMjpegSrc(null);
+        setStreamFps(null);
+        setStreamLatency(null);
+
+        const drawDetections = newMode === "inference";
+        const src = buildStreamUrl(
+          rtspUrl,
+          drawDetections,
+          enableFaceBiometrics,
+          newSid,
+          selectedCamera?.id
+        );
+
+        setStatusMessage(
+          newMode === "raw"
+            ? "Raw Stream active (Zero AI overlays)"
+            : "AI Inference active"
+        );
+
+        requestAnimationFrame(() => {
+          setActiveMjpegSrc(src);
+          setStreamKey((k) => k + 1);
+        });
+      }
+    },
+    [isStreamActive, rtspUrl, enableFaceBiometrics, selectedCamera?.id]
+  );
+
+  // Toggle biometric faces checkbox with socket reset
+  const handleToggleFaceBiometrics = useCallback(
+    (enabled: boolean) => {
+      setEnableFaceBiometrics(enabled);
+      if (isStreamActive && rtspUrl && aiMode === "inference") {
+        const oldSid = sessionIdRef.current;
+        if (oldSid) {
+          fetch(
+            `/api/backend/stream/live/stop?session_id=${encodeURIComponent(oldSid)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+        }
+        const newSid =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+        sessionIdRef.current = newSid;
+
+        setActiveMjpegSrc(null);
+        setStreamFps(null);
+        setStreamLatency(null);
+
+        const src = buildStreamUrl(rtspUrl, true, enabled, newSid, selectedCamera?.id);
+
+        requestAnimationFrame(() => {
+          setActiveMjpegSrc(src);
+          setStreamKey((k) => k + 1);
+        });
+      }
+    },
+    [isStreamActive, rtspUrl, aiMode, selectedCamera?.id]
+  );
 
   // Restart / Reconnect active stream
   const handleRestartStream = useCallback(() => {
     if (rtspUrl) {
+      setStreamFps(null);
+      setStreamLatency(null);
       connectToStream(rtspUrl, selectedCamera?.name);
       setStatusMessage("Stream refreshed");
     }
@@ -198,6 +301,8 @@ export function LiveSurveillanceConsole() {
     setIsStreamActive(false);
     setActiveMjpegSrc(null);
     setStreamError(false);
+    setStreamFps(null);
+    setStreamLatency(null);
     setStatusMessage("Stream stopped");
     const sid = sessionIdRef.current;
     fetch(
@@ -205,6 +310,72 @@ export function LiveSurveillanceConsole() {
       { method: "DELETE" }
     ).catch(() => {});
   }, []);
+
+  // Real-time stream telemetry (FPS & Latency) polling with overload protection
+  useEffect(() => {
+    if (!isStreamActive || !activeMjpegSrc) {
+      setStreamFps(null);
+      setStreamLatency(null);
+      return;
+    }
+
+    let isMounted = true;
+    let pollTimer: NodeJS.Timeout | null = null;
+    let inFlight = false;
+    let abortController: AbortController | null = null;
+
+    const pollTelemetry = async () => {
+      if (!isMounted || inFlight) return;
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+
+      inFlight = true;
+      abortController = new AbortController();
+      const timeoutId = setTimeout(() => {
+        abortController?.abort();
+      }, 1800);
+
+      try {
+        const res = await fetch(
+          `/api/backend/stream/live/detections?session_id=${encodeURIComponent(sid)}`,
+          {
+            cache: "no-store",
+            signal: abortController.signal,
+          }
+        );
+        clearTimeout(timeoutId);
+        if (res.ok && isMounted) {
+          const data = await res.json();
+          if (isMounted && data) {
+            if (typeof data.fps === "number" && data.status === "active") {
+              setStreamFps(data.fps);
+              if (typeof data.latency_ms === "number") {
+                setStreamLatency(data.latency_ms);
+              }
+            } else if (data.status === "stale" || data.status === "idle") {
+              setStreamFps(0);
+            }
+          }
+        }
+      } catch {
+        // Handled: aborted or transient backend load spike
+      } finally {
+        inFlight = false;
+        if (isMounted) {
+          // Schedule next poll only AFTER current finishes — prevents network socket congestion
+          pollTimer = setTimeout(pollTelemetry, 1000);
+        }
+      }
+    };
+
+    pollTimer = setTimeout(pollTelemetry, 600);
+
+    return () => {
+      isMounted = false;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (abortController) abortController.abort();
+    };
+  }, [isStreamActive, activeMjpegSrc, streamKey]);
 
   // Snapshot capture
   const handleCaptureSnapshot = useCallback(async () => {
@@ -274,7 +445,7 @@ export function LiveSurveillanceConsole() {
         handleCaptureSnapshot();
       } else if (e.key === "a" || e.key === "A") {
         e.preventDefault();
-        setAiMode((m) => (m === "raw" ? "inference" : "raw"));
+        handleSwitchAiMode(aiMode === "raw" ? "inference" : "raw");
       }
     };
 
@@ -421,11 +592,15 @@ export function LiveSurveillanceConsole() {
         </div>
       </div>
 
-      {/* ═══ 2. ACTIVE FEED VIEWPORT ═══ */}
+      {/* ═══ 2. ACTIVE FEED VIEWPORT (30% Compact default or 100% Full Width) ═══ */}
       <div
         ref={viewportRef}
-        className={`relative rounded-xl overflow-hidden bg-black border border-slate-800/90 shadow-md ${
-          isFullscreen ? "fixed inset-0 z-50 rounded-none border-none" : ""
+        className={`relative rounded-xl overflow-hidden bg-black border border-slate-800/90 shadow-md transition-all duration-300 ${
+          isFullscreen
+            ? "fixed inset-0 z-50 rounded-none border-none w-full h-full"
+            : frameSize === "compact"
+            ? "w-full md:w-[70%] max-w-[70%] mx-auto"
+            : "w-full"
         }`}
         style={{
           aspectRatio: isFullscreen ? undefined : "16/9",
@@ -440,12 +615,29 @@ export function LiveSurveillanceConsole() {
               : undefined
           }
           streamKey={streamKey}
+          fps={streamFps}
           onError={() => setStreamError(true)}
           onLoad={() => setStreamError(false)}
         />
 
         {/* Tactical In-Viewport Controls (Top & Bottom subtle overlays) */}
         <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-20">
+          {/* Frame Size Toggle (30% Compact vs 100% Full Width) */}
+          {!isFullscreen && (
+            <button
+              type="button"
+              onClick={() => setFrameSize((s) => (s === "compact" ? "full" : "compact"))}
+              className="px-2 py-1 rounded-md bg-black/60 hover:bg-black/90 text-white/80 hover:text-white border border-white/10 text-[10px] font-mono font-bold transition-colors cursor-pointer select-none"
+              title={
+                frameSize === "compact"
+                  ? "Currently 70% Compact (Click for 100% Full Width)"
+                  : "Currently 100% Full Width (Click for 70% Compact)"
+              }
+            >
+              {frameSize === "compact" ? "70% FIT" : "100% WIDE"}
+            </button>
+          )}
+
           {isStreamActive && (
             <button
               type="button"
@@ -479,7 +671,7 @@ export function LiveSurveillanceConsole() {
             <div className="inline-flex items-center p-0.5 rounded-lg bg-slate-100 border border-slate-200">
               <button
                 type="button"
-                onClick={() => setAiMode("raw")}
+                onClick={() => handleSwitchAiMode("raw")}
                 className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                   aiMode === "raw"
                     ? "bg-slate-900 text-white shadow-2xs"
@@ -491,7 +683,7 @@ export function LiveSurveillanceConsole() {
               </button>
               <button
                 type="button"
-                onClick={() => setAiMode("inference")}
+                onClick={() => handleSwitchAiMode("inference")}
                 className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
                   aiMode === "inference"
                     ? "bg-emerald-600 text-white shadow-2xs"
@@ -511,13 +703,95 @@ export function LiveSurveillanceConsole() {
                   <input
                     type="checkbox"
                     checked={enableFaceBiometrics}
-                    onChange={(e) => setEnableFaceBiometrics(e.target.checked)}
+                    onChange={(e) => handleToggleFaceBiometrics(e.target.checked)}
                     className="w-3.5 h-3.5 rounded text-emerald-600 border-slate-300 focus:ring-0 cursor-pointer"
                   />
                   <ScanFace className="w-3.5 h-3.5 text-slate-500" />
                   <span>Biometric Faces</span>
                 </label>
               </div>
+            )}
+          </div>
+
+          {/* Real-time Output FPS Monitoring */}
+          <div
+            className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50/90 shadow-2xs"
+            title="Real-time output stream framerate and pipeline latency"
+          >
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`w-2 h-2 rounded-full transition-colors ${
+                  !isStreamActive
+                    ? "bg-slate-300"
+                    : streamFps === null
+                    ? "bg-amber-400 animate-pulse"
+                    : streamFps >= 18
+                    ? "bg-emerald-500 animate-pulse"
+                    : streamFps >= 10
+                    ? "bg-blue-500 animate-pulse"
+                    : "bg-rose-500 animate-pulse"
+                }`}
+              />
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                <Activity className="w-3 h-3 text-slate-500" />
+                OUTPUT
+              </span>
+            </div>
+
+            <div className="flex items-baseline gap-1 font-mono">
+              <span
+                className={`text-sm font-bold tabular-nums ${
+                  !isStreamActive
+                    ? "text-slate-400"
+                    : streamFps === null
+                    ? "text-amber-600"
+                    : streamFps >= 18
+                    ? "text-emerald-700"
+                    : streamFps >= 10
+                    ? "text-blue-700"
+                    : "text-rose-600"
+                }`}
+              >
+                {!isStreamActive
+                  ? "--"
+                  : streamFps === null
+                  ? "..."
+                  : streamFps.toFixed(1)}
+              </span>
+              <span className="text-[10px] font-semibold text-slate-400">
+                FPS
+              </span>
+            </div>
+
+            {isStreamActive && streamLatency !== null && streamLatency > 0 && (
+              <span
+                className="text-[10px] font-mono text-slate-500 border-l border-slate-200 pl-2 tabular-nums"
+                title="Pipeline frame processing latency"
+              >
+                {Math.round(streamLatency)}ms
+              </span>
+            )}
+
+            {isStreamActive && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-tight ${
+                  streamFps === null
+                    ? "bg-amber-100 text-amber-800"
+                    : streamFps >= 18
+                    ? "bg-emerald-100 text-emerald-800"
+                    : streamFps >= 10
+                    ? "bg-blue-100 text-blue-800"
+                    : "bg-rose-100 text-rose-800"
+                }`}
+              >
+                {streamFps === null
+                  ? "SYNC"
+                  : streamFps >= 18
+                  ? "REALTIME"
+                  : streamFps >= 10
+                  ? "STABLE"
+                  : "LOW"}
+              </span>
             )}
           </div>
 

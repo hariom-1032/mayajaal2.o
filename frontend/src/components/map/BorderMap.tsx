@@ -61,12 +61,12 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
-// Demo Alert Marker on International Border
+// Demo Alert Marker at RECAM Perimeter
 const DEMO_ALERT = {
   id: "alert-1",
-  name: "Sector-04 Intrusion Alert — RS Pura Border Fence",
-  lat: 32.7240,
-  lng: 74.6710,
+  name: "Sector-01 Intrusion Alert — RP Gate Perimeter",
+  lat: 23.231270,
+  lng: 72.709568,
   severity: "High",
 };
 
@@ -80,37 +80,32 @@ export interface NeighborBorder {
 }
 
 export const NEIGHBOR_BORDERS: NeighborBorder[] = [
-  { name: "Pakistan", code: "PAK", lengthKm: 2725.8, color: "#dc2626", center: { lat: 29.5, lng: 72.0 }, zoom: 5.8 },
-  { name: "China", code: "CHN", lengthKm: 3323.6, color: "#f59e0b", center: { lat: 31.5, lng: 86.0 }, zoom: 5.2 },
-  { name: "Nepal", code: "NPL", lengthKm: 1756.2, color: "#10b981", center: { lat: 28.5, lng: 84.5 }, zoom: 6.8 },
-  { name: "Bhutan", code: "BTN", lengthKm: 757.7, color: "#059669", center: { lat: 27.0, lng: 90.5 }, zoom: 7.8 },
-  { name: "Bangladesh", code: "BGD", lengthKm: 4126.0, color: "#3b82f6", center: { lat: 24.5, lng: 89.5 }, zoom: 6.6 },
-  { name: "Myanmar", code: "MMR", lengthKm: 1659.4, color: "#8b5cf6", center: { lat: 25.0, lng: 95.0 }, zoom: 6.2 },
+  { name: "RECAM Sector", code: "RCM", lengthKm: 1.2, color: "#10b981", center: { lat: 23.2302, lng: 72.7084 }, zoom: 17.5 },
 ];
 
 export const TACTICAL_GIS_GEOFENCES = [
   {
     id: "gis-zone-01",
-    name: "RS Pura Buffer Zone (Zero Line Strip)",
+    name: "Outer Security Exclusion Perimeter",
     color: "#ef4444",
     severity: "CRITICAL",
     paths: [
-      { lat: 32.735, lng: 74.655 },
-      { lat: 32.738, lng: 74.685 },
-      { lat: 32.715, lng: 74.690 },
-      { lat: 32.712, lng: 74.660 },
+      { lat: 23.2317, lng: 72.7068 },
+      { lat: 23.2317, lng: 72.7100 },
+      { lat: 23.2288, lng: 72.7100 },
+      { lat: 23.2288, lng: 72.7068 },
     ],
   },
   {
     id: "gis-zone-02",
-    name: "Joint Check Post Restricted Perimeter",
+    name: "Main Office & SVL Room Restricted Perimeter",
     color: "#f59e0b",
     severity: "HIGH",
     paths: [
-      { lat: 32.728, lng: 74.668 },
-      { lat: 32.731, lng: 74.678 },
-      { lat: 32.722, lng: 74.681 },
-      { lat: 32.719, lng: 74.671 },
+      { lat: 23.2305, lng: 72.7084 },
+      { lat: 23.2305, lng: 72.7092 },
+      { lat: 23.2295, lng: 72.7092 },
+      { lat: 23.2295, lng: 72.7084 },
     ],
   },
 ];
@@ -118,22 +113,22 @@ export const TACTICAL_GIS_GEOFENCES = [
 export const TACTICAL_GIS_TRIPWIRES = [
   {
     id: "gis-wire-01",
-    name: "Zero Line Infiltration Tripwire (West to East)",
+    name: "RP Gate Main Vehicle Access Tripwire",
     color: "#dc2626",
     direction: "FORWARD",
     path: [
-      { lat: 32.742, lng: 74.650 },
-      { lat: 32.710, lng: 74.700 },
+      { lat: 23.2315, lng: 72.7092 },
+      { lat: 23.2310, lng: 72.7098 },
     ],
   },
   {
     id: "gis-wire-02",
-    name: "Gate Approach Directional Tripwire",
+    name: "Kote Rear Access Axis Tripwire",
     color: "#3b82f6",
     direction: "BIDIRECTIONAL",
     path: [
-      { lat: 32.720, lng: 74.665 },
-      { lat: 32.730, lng: 74.685 },
+      { lat: 23.2305, lng: 72.7073 },
+      { lat: 23.2300, lng: 72.7078 },
     ],
   },
 ];
@@ -163,8 +158,8 @@ export function BorderMap({
   customCameras,
   selectedCameraId: propSelectedCameraId,
   onMapClick,
-  center = { lat: 32.7240, lng: 74.6800 },
-  zoom = 11.8,
+  center = { lat: 23.2302, lng: 72.7084 },
+  zoom = 17.5,
   interactive = true,
   isFullscreen: isFullscreenProp,
   onToggleFullscreen,
@@ -209,10 +204,10 @@ export function BorderMap({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isFocusMode, handleExit]);
 
-  // International Border Layer state
-  const [showBorders, setShowBorders] = useState(true);
+  // Camlocations Shapefile Layer state
+  const [showCamLocations, setShowCamLocations] = useState(true);
   const [selectedNeighbor, setSelectedNeighbor] = useState<string>("All");
-  const [isBordersLoaded, setIsBordersLoaded] = useState(false);
+  const [isCamLocationsLoaded, setIsCamLocationsLoaded] = useState(false);
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
 
   // 3D Perspective & Heatmap states
@@ -455,64 +450,76 @@ export function BorderMap({
 
         mapInstanceRef.current = map;
 
-        // 1. Setup InfoWindow for International Borders
-        const borderInfoWindow = new google.maps.InfoWindow({ maxWidth: 280 });
+        // 1. Setup InfoWindow for Camlocations Layer
+        const camInfoWindow = new google.maps.InfoWindow({ maxWidth: 300 });
 
-        // 2. Load Survey of India International Land Borders GeoJSON into map.data
-        fetch("/data/india_borders.geojson")
-          .then((res) => {
-            if (!res.ok) throw new Error("Could not load /data/india_borders.geojson");
-            return res.json();
-          })
+        // 2. Load Camlocations Shapefile GeoJSON into map.data
+        const loadCamGeoJson = () => {
+          return fetch("/data/camlocations.geojson")
+            .then((res) => {
+              if (!res.ok) return fetch("/data/recam_locations.geojson");
+              return res;
+            })
+            .then((res) => {
+              if (!res.ok) throw new Error("Could not load /data/camlocations.geojson");
+              return res.json();
+            });
+        };
+
+        loadCamGeoJson()
           .then((geoJsonData) => {
             if (!isMounted || !mapInstanceRef.current) return;
             map.data.addGeoJson(geoJsonData);
-            setIsBordersLoaded(true);
+            setIsCamLocationsLoaded(true);
 
-            // Add interactive border hover & click handlers
-            map.data.addListener("mouseover", (event: any) => {
-              map.data.overrideStyle(event.feature, {
-                strokeWeight: 4.5,
-                strokeOpacity: 1.0,
-              });
+            // Automatically zoom and fit bounds directly to the Camlocations layer
+            const bounds = new google.maps.LatLngBounds();
+            map.data.forEach((feature: any) => {
+              const geom = feature.getGeometry();
+              if (geom && geom.getType() === "Point") {
+                bounds.extend(geom.get());
+              }
             });
+            if (!bounds.isEmpty()) {
+              map.fitBounds(bounds, { top: 70, bottom: 70, left: 70, right: 70 });
+            }
 
-            map.data.addListener("mouseout", () => {
-              map.data.revertStyle();
-            });
-
+            // Interactive camera location click handlers
             map.data.addListener("click", (event: any) => {
-              const neighbor = event.feature.getProperty("NEIGHBOR");
-              const lenKm = event.feature.getProperty("LEN_KM");
-              const color = event.feature.getProperty("strokeColor") || "#10b981";
-              const source = event.feature.getProperty("SOURCE") || "Survey of India";
+              const ch = event.feature.getProperty("channel");
+              const name = event.feature.getProperty("name");
+              const loc = event.feature.getProperty("location");
+              const camType = event.feature.getProperty("type");
+              const lat = event.latLng.lat().toFixed(6);
+              const lng = event.latLng.lng().toFixed(6);
 
               const content = `
-                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display',system-ui,sans-serif; padding:6px 2px; min-width:220px;">
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display',system-ui,sans-serif; padding:8px 4px; min-width:250px;">
                   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-                    <span style="font-size:10px; font-weight:800; text-transform:uppercase; color:${color}; background:${color}15; padding:2px 6px; border-radius:4px;">
-                      ${escapeHtml(source)}
+                    <span style="font-size:10px; font-weight:800; text-transform:uppercase; color:#059669; background:#ecfdf5; padding:2px 8px; border-radius:6px; border:1px solid #a7f3d0;">
+                      CHANNEL ${escapeHtml(ch)}
                     </span>
-                    <span style="font-size:10px; color:#64748b; font-family:'SF Mono',SFMono-Regular,ui-monospace,Menlo,monospace;">WGS 84</span>
+                    <span style="font-size:10px; color:#64748b; font-family:monospace; background:#f1f5f9; padding:2px 6px; border-radius:4px;">${escapeHtml(camType)}</span>
                   </div>
-                  <h4 style="margin:0 0 4px; font-size:13px; font-weight:800; color:#0f172a;">
-                    🇮🇳 India — ${escapeHtml(neighbor)} Border
+                  <h4 style="margin:0 0 6px; font-size:13px; font-weight:800; color:#0f172a;">
+                    📹 ${escapeHtml(name)}
                   </h4>
-                  <div style="font-size:11px; color:#475569; margin-bottom:8px; line-height:1.5;">
-                    <div><strong>Frontier Length:</strong> <span style="font-weight:700; color:#0f172a;">${Number(lenKm).toLocaleString()} km</span></div>
-                    <div><strong>Type:</strong> International Land Boundary</div>
-                    <div><strong>Status:</strong> MAATRIX Grid Active</div>
+                  <div style="font-size:11px; color:#475569; line-height:1.6;">
+                    <div><strong>Facility Location:</strong> <span style="color:#0f172a; font-weight:600;">${escapeHtml(loc)}</span></div>
+                    <div><strong>Coordinates:</strong> <span style="font-family:monospace; color:#059669; font-weight:600;">${lat}, ${lng}</span></div>
+                    <div><strong>Layer Source:</strong> <span style="color:#0f172a; font-weight:600;">camlocations shapefile</span></div>
+                    <div><strong>Status:</strong> <span style="color:#059669; font-weight:700;">ACTIVE SURVEILLANCE NODE</span></div>
                   </div>
                 </div>
               `;
 
-              borderInfoWindow.setContent(content);
-              borderInfoWindow.setPosition(event.latLng);
-              borderInfoWindow.open(map);
+              camInfoWindow.setContent(content);
+              camInfoWindow.setPosition(event.latLng);
+              camInfoWindow.open(map);
             });
           })
           .catch((err) => {
-            console.warn("Failed to load India borders GeoJSON:", err);
+            console.warn("Failed to load Camlocations camera locations GeoJSON:", err);
           });
 
         setIsLoaded(true);
@@ -528,26 +535,30 @@ export function BorderMap({
     };
   }, []);
 
-  // Sync International Border Styling & Visibility whenever showBorders or selectedNeighbor changes
+  // Sync Camlocations Layer Styling & Visibility
   useEffect(() => {
-    if (!mapInstanceRef.current || !isLoaded || !isBordersLoaded) return;
+    if (!mapInstanceRef.current || !isLoaded || !isCamLocationsLoaded) return;
     const map = mapInstanceRef.current;
+    const google = (window as any).google;
 
     map.data.setStyle((feature: any) => {
-      const neighbor = feature.getProperty("NEIGHBOR");
-      const isNeighborMatch = selectedNeighbor === "All" || selectedNeighbor === neighbor;
-      const isVisible = showBorders && isNeighborMatch;
-      const color = feature.getProperty("strokeColor") || "#10b981";
+      const isVisible = showCamLocations;
+      const markerColor = feature.getProperty("markerColor") || "#10b981";
 
       return {
-        strokeColor: color,
-        strokeWeight: selectedNeighbor === neighbor ? 4 : 2.75,
-        strokeOpacity: isVisible ? 0.95 : 0,
+        icon: {
+          path: google?.maps?.SymbolPath?.CIRCLE || 0,
+          scale: 9,
+          fillColor: markerColor,
+          fillOpacity: 0.9,
+          strokeColor: "#ffffff",
+          strokeWeight: 2.5,
+        },
         visible: isVisible,
         clickable: isVisible,
       };
     });
-  }, [showBorders, selectedNeighbor, isLoaded, isBordersLoaded]);
+  }, [showCamLocations, isLoaded, isCamLocationsLoaded]);
 
   // Update onMapClick listener
   useEffect(() => {
@@ -923,7 +934,7 @@ export function BorderMap({
     }
   };
 
-  // Reset View to Pan-India
+  // Reset View to Camlocations Center
   const handleResetView = () => {
     if (!mapInstanceRef.current || !(window as any).google?.maps) return;
     mapInstanceRef.current.setCenter(center);
@@ -933,7 +944,42 @@ export function BorderMap({
       mapInstanceRef.current.setHeading(0);
       setIs3DMode(false);
     }
+    showToast("Reset map view to Camlocations center");
   };
+
+  // Dedicated helper to zoom map and fit bounds to the Camlocations layer
+  const zoomToLayer = useCallback(() => {
+    if (!mapInstanceRef.current || !(window as any).google?.maps) return;
+    const google = (window as any).google;
+    const map = mapInstanceRef.current;
+    const bounds = new google.maps.LatLngBounds();
+
+    if (map.data) {
+      map.data.forEach((feature: any) => {
+        const geom = feature.getGeometry();
+        if (geom && geom.getType() === "Point") {
+          bounds.extend(geom.get());
+        }
+      });
+    }
+
+    filteredCameras.forEach((cam) => {
+      const lat = Number(cam.latitude ?? (cam.coordinates ? cam.coordinates[1] : 0));
+      const lng = Number(cam.longitude ?? (cam.coordinates ? cam.coordinates[0] : 0));
+      if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+        bounds.extend({ lat, lng });
+      }
+    });
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { top: 70, bottom: 70, left: 70, right: 70 });
+      showToast("Zoomed and fitted map to Camlocations layer");
+    } else {
+      map.setCenter(center);
+      map.setZoom(zoom);
+      showToast("Centered map on Camlocations grid");
+    }
+  }, [filteredCameras, center, zoom]);
 
   // Focus a specific neighbor border
   const handleFocusNeighbor = (border: NeighborBorder) => {
@@ -1365,20 +1411,31 @@ export function BorderMap({
               <span>Filters</span>
             </button>
 
-            {/* Border Layer Toggle Button */}
+            {/* Camlocations Layer Toggle Button */}
             <button
               type="button"
-              onClick={() => setShowBorders(!showBorders)}
+              onClick={() => setShowCamLocations(!showCamLocations)}
               className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-xl transition-all border cursor-pointer ${
-                showBorders
+                showCamLocations
                   ? "bg-[#1e4b38] text-white border-emerald-700 shadow-xs"
                   : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
               }`}
-              title="Toggle Survey of India International Land Borders"
+              title="Toggle Camlocations Camera Locations Shapefile Layer"
             >
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>🇮🇳 Borders</span>
-              {showBorders && <Check className="w-3 h-3 text-emerald-300" />}
+              <CctvCameraIcon className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Camlocations Layer</span>
+              {showCamLocations && <Check className="w-3 h-3 text-emerald-300" />}
+            </button>
+
+            {/* Zoom to Layer Button */}
+            <button
+              type="button"
+              onClick={zoomToLayer}
+              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-xl transition-all border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 shadow-2xs cursor-pointer"
+              title="Zoom and fit map viewport to the Camlocations camera locations layer"
+            >
+              <Crosshair className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Zoom to Layer</span>
             </button>
 
             {/* Map Layer Mode buttons */}
@@ -1437,7 +1494,7 @@ export function BorderMap({
             <button
               type="button"
               onClick={handleResetView}
-              title="Reset Map to Pan-India Overview"
+              title="Reset Map to Camlocations Center"
               className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs transition-colors cursor-pointer"
             >
               <Navigation className="w-3.5 h-3.5" />
@@ -1739,12 +1796,22 @@ export function BorderMap({
                 <span>{cameraMarkerStyle === "cctv" ? "CCTV Nodes" : "Pins"}</span>
               </button>
 
+              {/* Zoom to Layer in Focus Mode */}
+              <button
+                type="button"
+                onClick={zoomToLayer}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-emerald-700 transition-colors cursor-pointer"
+                title="Zoom and fit map viewport to Camlocations layer"
+              >
+                <Crosshair className="w-3.5 h-3.5 text-emerald-600" />
+              </button>
+
               {/* Reset View */}
               <button
                 type="button"
                 onClick={handleResetView}
                 className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-                title="Reset Pan-India View"
+                title="Reset View to Camlocations Center"
               >
                 <Navigation className="w-3.5 h-3.5" />
               </button>
@@ -2203,39 +2270,21 @@ export function BorderMap({
               </span>
             </div>
 
-            {/* Dynamic Border Legend */}
-            {showBorders && (
+            {/* Camlocations Layer Info */}
+            {showCamLocations && (
               <div className="flex flex-wrap items-center gap-3 text-[11px] font-medium text-slate-500 border-l border-slate-200 pl-3">
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#dc2626] inline-block" />
-                  <span>Pakistan</span>
+                <span className="flex items-center gap-1.5 font-semibold text-emerald-700">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                  <span>Camlocations 10-Node Grid Loaded</span>
                 </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#f59e0b] inline-block" />
-                  <span>China</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#10b981] inline-block" />
-                  <span>Nepal</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#059669] inline-block" />
-                  <span>Bhutan</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#3b82f6] inline-block" />
-                  <span>Bangladesh</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-0.5 bg-[#8b5cf6] inline-block" />
-                  <span>Myanmar</span>
-                </span>
+                <span className="text-slate-400">•</span>
+                <span>RP Gate • Kote • SVL Room • Ration Store • MI Room</span>
               </div>
             )}
           </div>
 
           <div className="text-[11px] font-mono text-slate-400">
-            Source: Survey of India OUTLINE_OF_INDIA (WGS 84)
+            Layer: Camlocations Shapefile (WGS 84 • EPSG:4326)
           </div>
         </div>
       )}

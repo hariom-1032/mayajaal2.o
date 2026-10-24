@@ -222,6 +222,7 @@ class GeofenceEngine:
                 "severity": data.get("severity", "CRITICAL"),
                 "polygon": data.get("polygon", []),
                 "targetClasses": data.get("targetClasses", ["person", "car", "truck", "suspect"]),
+                "accessMode": data.get("accessMode", "AUTHORIZED_PASS"),
                 "enabled": bool(data.get("enabled", True)),
                 "cooldownSeconds": float(data.get("cooldownSeconds", 20.0)),
                 "description": data.get("description", ""),
@@ -265,6 +266,7 @@ class GeofenceEngine:
                 "p2": data.get("p2", [0.9, 0.5]),
                 "direction": data.get("direction", "FORWARD").upper(),
                 "targetClasses": data.get("targetClasses", ["person", "suspect"]),
+                "accessMode": data.get("accessMode", "AUTHORIZED_PASS"),
                 "enabled": bool(data.get("enabled", True)),
                 "cooldownSeconds": float(data.get("cooldownSeconds", 15.0)),
                 "description": data.get("description", ""),
@@ -473,6 +475,31 @@ class GeofenceEngine:
                     continue
 
                 if any(is_point_in_polygon(pt[0], pt[1], poly) for pt in eval_pts):
+                    # Access Control Evaluation
+                    access_mode = str(zone.get("accessMode", "AUTHORIZED_PASS")).upper()
+                    is_auth = bool(obj.get("is_authorized", False) or obj.get("identity_status") == "authorized")
+                    is_susp = bool(obj.get("is_suspect", False) or obj.get("identity_status") == "suspect" or class_name == "suspect")
+                    is_unk = bool(obj.get("is_unknown", False) or obj.get("identity_status") == "unknown" or (not is_auth and not is_susp))
+
+                    if access_mode == "AUTHORIZED_PASS":
+                        if is_auth:
+                            # Silent pass: authorized personnel from database do nothing
+                            logger.debug("Access allowed: Authorized person %s entered %s (silent pass)", obj.get("person_name") or track_id, zone.get("name"))
+                            continue
+                    elif access_mode == "SUSPECT_ONLY":
+                        if not is_susp:
+                            continue
+
+                    alert_category = "geofence_suspect_breach" if is_susp else "geofence_unknown_intrusion"
+                    alert_severity = "CRITICAL" if is_susp else zone.get("severity", "HIGH")
+                    p_name = obj.get("person_name") or suspect_name
+                    if is_susp:
+                        alert_title = f"🚨 Suspect Breach: {suspect_name or 'Identified Target'}"
+                        alert_notes = f"Flagged suspect {suspect_name or ''} (Track #{track_id}) breached restricted zone {zone.get('name')}."
+                    else:
+                        alert_title = f"⚠️ Perimeter Intrusion: Unknown Individual ({zone.get('name', 'Zone')})"
+                        alert_notes = f"Unauthorized unknown individual (Track #{track_id}) entered restricted zone {zone.get('name')}."
+
                     # Capture forensic snapshot of intruder
                     snapshot_filename = None
                     if auto_alert or frame is not None:
@@ -487,6 +514,7 @@ class GeofenceEngine:
 
                     breach_event = {
                         "type": "zone_breach",
+                        "alertType": "suspect_breach" if is_susp else "unknown_intrusion",
                         "zoneId": zone["id"],
                         "name": zone.get("name", "Restricted Perimeter"),
                         "cameraId": camera_id,
@@ -494,8 +522,10 @@ class GeofenceEngine:
                         "className": class_name,
                         "confidence": conf,
                         "suspectName": suspect_name,
+                        "personName": p_name,
+                        "identityStatus": "suspect" if is_susp else ("unknown" if is_unk else "authorized"),
                         "footpoint": [round(curr_fp[0], 4), round(curr_fp[1], 4)],
-                        "severity": zone.get("severity", "CRITICAL"),
+                        "severity": alert_severity,
                         "snapshotUrl": f"/api/alerts/snapshots/{snapshot_filename}" if snapshot_filename else None,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
@@ -512,9 +542,9 @@ class GeofenceEngine:
                         if auto_alert:
                             try:
                                 alert_service.create_alert(
-                                    title=f"Geofence Breach: {zone.get('name', 'Perimeter')}",
+                                    title=alert_title,
                                     location=f"Sector Grid [{camera_id}] — {zone.get('name')}",
-                                    severity=zone.get("severity", "CRITICAL"),
+                                    severity=alert_severity,
                                     camera_id=camera_id,
                                     camera_name=camera_name or camera_id,
                                     class_name=class_name,
@@ -522,9 +552,9 @@ class GeofenceEngine:
                                     box=box,
                                     snapshot_filename=snapshot_filename,
                                     suspect_name=suspect_name,
-                                    threat_level=zone.get("severity", "CRITICAL"),
-                                    category="geofence_breach",
-                                    notes=f"Track #{track_id} ({class_name}) entered restricted zone. Footpoint: ({curr_fp[0]:.2f}, {curr_fp[1]:.2f})",
+                                    threat_level=alert_severity,
+                                    category=alert_category,
+                                    notes=alert_notes,
                                 )
                             except Exception as exc:
                                 logger.error("Failed to dispatch geofence alert: %s", exc)
@@ -547,6 +577,20 @@ class GeofenceEngine:
                     )
 
                     if crossed:
+                        # Access Control Evaluation for Tripwires
+                        wire_access_mode = str(wire.get("accessMode", "AUTHORIZED_PASS")).upper()
+                        is_auth = bool(obj.get("is_authorized", False) or obj.get("identity_status") == "authorized")
+                        is_susp = bool(obj.get("is_suspect", False) or obj.get("identity_status") == "suspect" or class_name == "suspect")
+                        is_unk = bool(obj.get("is_unknown", False) or obj.get("identity_status") == "unknown" or (not is_auth and not is_susp))
+
+                        if wire_access_mode == "AUTHORIZED_PASS":
+                            if is_auth:
+                                logger.debug("Access allowed: Authorized person %s crossed %s (silent pass)", obj.get("person_name") or track_id, wire.get("name"))
+                                continue
+                        elif wire_access_mode == "SUSPECT_ONLY":
+                            if not is_susp:
+                                continue
+
                         cd_key = f"wire:{wire['id']}:{track_id}"
                         cooldown = float(wire.get("cooldownSeconds", 15.0))
                         last_alert_time = self._cooldowns.get(cd_key, 0.0)
@@ -564,8 +608,20 @@ class GeofenceEngine:
                                     barrier_type="tripwire",
                                 )
 
+                            alert_severity = "CRITICAL" if is_susp else wire.get("severity", "CRITICAL")
+                            p_name = obj.get("person_name") or suspect_name
+                            if is_susp:
+                                alert_title = f"🚨 Suspect Crossed Tripwire: {suspect_name or 'Identified Target'}"
+                                alert_category = "tripwire_suspect_breach"
+                                alert_notes = f"Flagged suspect {suspect_name or ''} (Track #{track_id}) crossed {crossed_dir} tripwire {wire.get('name')}."
+                            else:
+                                alert_title = f"⚠️ Tripwire Violation: Unknown Individual ({wire.get('name')})"
+                                alert_category = "tripwire_unknown_crossing"
+                                alert_notes = f"Unauthorized unknown individual (Track #{track_id}) crossed {crossed_dir} tripwire {wire.get('name')}."
+
                             breach_event = {
                                 "type": "tripwire_crossing",
+                                "alertType": "suspect_breach" if is_susp else "unknown_intrusion",
                                 "wireId": wire["id"],
                                 "name": wire.get("name", "Tactical Tripwire"),
                                 "cameraId": camera_id,
@@ -573,10 +629,12 @@ class GeofenceEngine:
                                 "className": class_name,
                                 "confidence": conf,
                                 "suspectName": suspect_name,
+                                "personName": p_name,
+                                "identityStatus": "suspect" if is_susp else ("unknown" if is_unk else "authorized"),
                                 "footpoint": [round(curr_fp[0], 4), round(curr_fp[1], 4)],
                                 "directionCrossed": crossed_dir,
                                 "requiredDirection": direction,
-                                "severity": wire.get("severity", "CRITICAL"),
+                                "severity": alert_severity,
                                 "snapshotUrl": f"/api/alerts/snapshots/{snapshot_filename}" if snapshot_filename else None,
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             }
@@ -585,9 +643,9 @@ class GeofenceEngine:
                             if auto_alert:
                                 try:
                                     alert_service.create_alert(
-                                        title=f"Tripwire Triggered: {wire.get('name', 'Tripwire')}",
+                                        title=alert_title,
                                         location=f"Sector Grid [{camera_id}] — {wire.get('name')}",
-                                        severity=wire.get("severity", "CRITICAL"),
+                                        severity=alert_severity,
                                         camera_id=camera_id,
                                         camera_name=camera_name or camera_id,
                                         class_name=class_name,
@@ -595,9 +653,9 @@ class GeofenceEngine:
                                         box=box,
                                         snapshot_filename=snapshot_filename,
                                         suspect_name=suspect_name,
-                                        threat_level=wire.get("severity", "CRITICAL"),
-                                        category="tripwire_violation",
-                                        notes=f"Track #{track_id} ({class_name}) crossed {crossed_dir} tripwire. Footpoint: ({curr_fp[0]:.2f}, {curr_fp[1]:.2f})",
+                                        threat_level=alert_severity,
+                                        category=alert_category,
+                                        notes=alert_notes,
                                     )
                                 except Exception as exc:
                                     logger.error("Failed to dispatch tripwire alert: %s", exc)

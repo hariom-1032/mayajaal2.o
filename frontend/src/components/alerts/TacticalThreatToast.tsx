@@ -53,7 +53,6 @@ interface ThreatToastCardProps {
 
 function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardProps) {
   const router = useRouter();
-  const [timeLeft, setTimeLeft] = useState(TOAST_AUTO_DISMISS_MS);
   const [isHovered, setIsHovered] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [selectedUnit, setSelectedUnit] = useState("QRT Alpha-1");
@@ -62,22 +61,17 @@ function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardPro
 
   // Auto-dismiss countdown timer (pauses when hovered or dispatching)
   useEffect(() => {
-    if (isHovered || isDispatching) return;
+    if (isHovered || isDispatching || hasDismissedRef.current) return;
 
-    const interval = setInterval(() => {
-      setTimeLeft((prev) => Math.max(0, prev - TICK_INTERVAL_MS));
-    }, TICK_INTERVAL_MS);
+    const timer = setTimeout(() => {
+      if (!hasDismissedRef.current) {
+        hasDismissedRef.current = true;
+        onDismiss(alert.id, alert.title, alert.suspectName);
+      }
+    }, TOAST_AUTO_DISMISS_MS);
 
-    return () => clearInterval(interval);
-  }, [isHovered, isDispatching]);
-
-  // Safely trigger onDismiss when countdown reaches 0 (outside of state updater / render)
-  useEffect(() => {
-    if (timeLeft <= 0 && !hasDismissedRef.current) {
-      hasDismissedRef.current = true;
-      onDismiss(alert.id, alert.title, alert.suspectName);
-    }
-  }, [timeLeft, alert.id, alert.title, alert.suspectName, onDismiss]);
+    return () => clearTimeout(timer);
+  }, [isHovered, isDispatching, alert.id, alert.title, alert.suspectName, onDismiss]);
 
   const handleQuickDispatch = async (alertId: string) => {
     try {
@@ -94,11 +88,18 @@ function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardPro
   };
 
   const isBreach =
-    alert.category === "geofence_breach" ||
-    alert.category === "tripwire_violation" ||
-    alert.category === "tripwire_crossing" ||
-    alert.title?.toLowerCase().includes("geofence") ||
-    alert.title?.toLowerCase().includes("tripwire");
+    Boolean(
+      alert.category?.startsWith("geofence_") ||
+      alert.category?.startsWith("tripwire_") ||
+      alert.category === "geofence_breach" ||
+      alert.category === "tripwire_violation" ||
+      alert.category === "tripwire_crossing" ||
+      alert.title?.toLowerCase().includes("geofence") ||
+      alert.title?.toLowerCase().includes("tripwire") ||
+      alert.title?.toLowerCase().includes("perimeter") ||
+      alert.title?.toLowerCase().includes("breach") ||
+      alert.title?.toLowerCase().includes("intrusion")
+    );
 
   const backendBase =
     process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, "") || "http://localhost:8000";
@@ -107,9 +108,6 @@ function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardPro
       ? alert.snapshotUrl
       : `${backendBase}${alert.snapshotUrl}`
     : null;
-
-  const secondsRemaining = Math.max(1, Math.ceil(timeLeft / 1000));
-  const progressPercent = Math.max(0, Math.min(100, (timeLeft / TOAST_AUTO_DISMISS_MS) * 100));
 
   return (
     <div
@@ -140,9 +138,9 @@ function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardPro
           {/* Auto-dismiss countdown badge */}
           <span
             className="text-[10px] font-mono text-slate-400 font-medium px-1.5 py-0.5 rounded bg-slate-100/90 border border-slate-200/60 select-none"
-            title={isHovered ? "Timer paused on hover" : `Auto-dismisses in ${secondsRemaining}s`}
+            title={isHovered ? "Timer paused on hover" : "Auto-dismisses in 3s"}
           >
-            {isHovered ? "Paused" : `${secondsRemaining}s`}
+            {isHovered ? "Paused" : "3s"}
           </span>
 
           <button
@@ -287,13 +285,13 @@ function ThreatToastCard({ alert, onDismiss, onAcknowledge }: ThreatToastCardPro
         </button>
       </div>
 
-      {/* Bottom Auto-Dismiss Countdown Progress Bar */}
+      {/* Bottom Auto-Dismiss Countdown Progress Bar (Pure CSS Compositor Animation) */}
       <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-100 overflow-hidden">
         <div
-          className="h-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500"
+          className="h-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 animate-toast-progress"
           style={{
-            width: `${progressPercent}%`,
-            transition: isHovered || isDispatching ? "none" : `width ${TICK_INTERVAL_MS}ms linear`,
+            animationDuration: `${TOAST_AUTO_DISMISS_MS}ms`,
+            animationPlayState: isHovered || isDispatching ? "paused" : "running",
           }}
         />
       </div>
@@ -381,12 +379,18 @@ export function TacticalThreatToast() {
 
   for (const alert of alerts) {
     const isSuspect = Boolean(alert.suspectName) || alert.className === "suspect";
-    const isBreach =
+    const isBreach = Boolean(
+      alert.category?.startsWith("geofence_") ||
+      alert.category?.startsWith("tripwire_") ||
       alert.category === "geofence_breach" ||
       alert.category === "tripwire_violation" ||
       alert.category === "tripwire_crossing" ||
       alert.title?.toLowerCase().includes("geofence") ||
-      alert.title?.toLowerCase().includes("tripwire");
+      alert.title?.toLowerCase().includes("tripwire") ||
+      alert.title?.toLowerCase().includes("perimeter") ||
+      alert.title?.toLowerCase().includes("breach") ||
+      alert.title?.toLowerCase().includes("intrusion")
+    );
 
     const alertKey = (alert.suspectName || alert.title || alert.id).trim().toLowerCase();
 

@@ -2,6 +2,8 @@ export type GeofenceSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 export type TripwireDirection = "FORWARD" | "REVERSE" | "BIDIRECTIONAL";
 
+export type GeofenceAccessMode = "AUTHORIZED_PASS" | "ALL_ALERTS" | "SUSPECT_ONLY";
+
 export interface GeofenceZone {
   id: string;
   name: string;
@@ -10,6 +12,7 @@ export interface GeofenceZone {
   severity: GeofenceSeverity;
   polygon: [number, number][]; // Normalized [x, y] coordinates in [0.0, 1.0]
   targetClasses: string[];
+  accessMode?: GeofenceAccessMode;
   enabled: boolean;
   cooldownSeconds: number;
   description?: string;
@@ -26,6 +29,7 @@ export interface DirectionalTripwire {
   p2: [number, number]; // Normalized end [x, y]
   direction: TripwireDirection;
   targetClasses: string[];
+  accessMode?: GeofenceAccessMode;
   enabled: boolean;
   cooldownSeconds: number;
   description?: string;
@@ -39,6 +43,7 @@ export interface GeofencesResponse {
 
 export interface GeofenceBreachEvent {
   type: "zone_breach" | "tripwire_crossing";
+  alertType?: "suspect_breach" | "unknown_intrusion";
   zoneId?: string;
   wireId?: string;
   name: string;
@@ -47,6 +52,8 @@ export interface GeofenceBreachEvent {
   className: string;
   confidence: number;
   suspectName?: string;
+  personName?: string;
+  identityStatus?: "authorized" | "suspect" | "unknown";
   footpoint: [number, number];
   directionCrossed?: string;
   requiredDirection?: string;
@@ -69,6 +76,7 @@ export interface CreateZonePayload {
   severity: GeofenceSeverity;
   polygon: [number, number][];
   targetClasses: string[];
+  accessMode?: GeofenceAccessMode;
   enabled?: boolean;
   cooldownSeconds?: number;
   description?: string;
@@ -83,6 +91,7 @@ export interface CreateTripwirePayload {
   p2: [number, number];
   direction: TripwireDirection;
   targetClasses: string[];
+  accessMode?: GeofenceAccessMode;
   enabled?: boolean;
   cooldownSeconds?: number;
   description?: string;

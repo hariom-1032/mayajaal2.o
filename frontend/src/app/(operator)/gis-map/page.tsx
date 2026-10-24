@@ -96,7 +96,7 @@ export default function GisMapPage() {
           {/* Geolocation Tag */}
           <div className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-mono font-medium">
             <Crosshair className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Survey of India • 14,348 km Border Grid</span>
+            <span>Camlocations Tactical Grid • 10 Surveillance Nodes</span>
           </div>
 
           {/* Suspect Trajectory Quick Action */}

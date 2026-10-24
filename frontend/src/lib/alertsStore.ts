@@ -5,7 +5,7 @@ import { AlertItem, AlertSeverity } from "@/types/alert";
 import { api } from "@/lib/api";
 
 export const INCIDENT_STORAGE_KEY = "maatrix_incident_records";
-const MAX_LOCAL_INCIDENTS = 500;
+const MAX_LOCAL_INCIDENTS = 200;
 
 export const SEED_INCIDENTS: AlertItem[] = [];
 
@@ -25,7 +25,7 @@ function loadStoredIncidents(): AlertItem[] {
       const clean = parsed.filter(
         (item: AlertItem) => item && !String(item.id || "").startsWith("incident-demo-")
       );
-      return clean;
+      return clean.slice(0, MAX_LOCAL_INCIDENTS);
     }
   } catch (err) {
     console.warn("[IncidentsStore] Failed to parse local incidents:", err);
@@ -33,14 +33,25 @@ function loadStoredIncidents(): AlertItem[] {
   return [];
 }
 
+let persistTimeout: NodeJS.Timeout | null = null;
+
 function persistIncidents(alerts: AlertItem[]) {
   if (typeof window === "undefined") return;
-  try {
-    const trimmed = alerts.slice(0, MAX_LOCAL_INCIDENTS);
-    localStorage.setItem(INCIDENT_STORAGE_KEY, JSON.stringify(trimmed));
-  } catch (err) {
-    console.error("[IncidentsStore] Failed to persist incident records to localStorage:", err);
-  }
+  if (persistTimeout) clearTimeout(persistTimeout);
+  persistTimeout = setTimeout(() => {
+    try {
+      const trimmed = alerts.slice(0, MAX_LOCAL_INCIDENTS);
+      localStorage.setItem(INCIDENT_STORAGE_KEY, JSON.stringify(trimmed));
+    } catch {
+      // If QuotaExceededError, aggressively truncate to last 50 items
+      try {
+        const minimal = alerts.slice(0, 50);
+        localStorage.setItem(INCIDENT_STORAGE_KEY, JSON.stringify(minimal));
+      } catch {
+        console.warn("[IncidentsStore] localStorage quota reached, skipping persist");
+      }
+    }
+  }, 500);
 }
 
 let memoryAlerts: AlertItem[] = [];
@@ -73,14 +84,30 @@ function getAlertsWsUrl(): string {
   return `${wsProto}://${host}/api/alerts/ws`;
 }
 
+let sharedAudioCtx: AudioContext | null = null;
+let lastChimeTime = 0;
+
 function playAlertChime(threatLevel?: string) {
   if (typeof window === "undefined") return;
+  const now = Date.now();
+  // Throttle chimes: maximum 1 chime every 1.5 seconds to avoid audio buffer saturation / freeze
+  if (now - lastChimeTime < 1500) return;
+  lastChimeTime = now;
+
   try {
     const AudioCtx =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+
+    if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx.state === "suspended") {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+
+    const ctx = sharedAudioCtx;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
@@ -132,7 +159,7 @@ function initWebSocket() {
                 Math.abs((a.timestamp || 0) - (incoming.timestamp || Date.now())) < 5000)
           );
           if (existingIdx === -1) {
-            memoryAlerts = [incoming, ...memoryAlerts];
+            memoryAlerts = [incoming, ...memoryAlerts].slice(0, MAX_LOCAL_INCIDENTS);
             playAlertChime(incoming.threatLevel || (incoming.severity as string));
             notify();
           }
@@ -216,7 +243,7 @@ export const alertsStore = {
       ...alert,
     };
 
-    memoryAlerts = [newAlert, ...memoryAlerts];
+    memoryAlerts = [newAlert, ...memoryAlerts].slice(0, MAX_LOCAL_INCIDENTS);
     notify();
     return newAlert;
   },

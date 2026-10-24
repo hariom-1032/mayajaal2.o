@@ -157,6 +157,109 @@ class TestGeofenceEngine(unittest.TestCase):
         self.assertTrue(engine.delete_zone(zone["id"]))
         self.assertTrue(engine.delete_tripwire(tripwire["id"]))
 
+    def test_access_control_authorized_silent_pass(self):
+        """Verify that an authorized personnel entering polygon triggers NO breach/alert."""
+        engine = GeofenceEngine()
+        test_cam = "cam-test-access-ctrl"
+        zone = engine.add_zone({
+            "name": "Access Controlled Zone",
+            "cameraId": test_cam,
+            "polygon": [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]],
+            "targetClasses": ["person", "suspect"],
+            "accessMode": "AUTHORIZED_PASS",
+            "cooldownSeconds": 10.0,
+        })
+
+        # Authorized employee enters polygon
+        breaches = engine.evaluate_tracks(
+            camera_id=test_cam,
+            tracked_objects=[{
+                "track_id": 201,
+                "box": [0.45, 0.5, 0.55, 0.6],
+                "class_name": "person",
+                "confidence": 0.98,
+                "person_name": "Hariom (Staff)",
+                "identity_status": "authorized",
+                "is_authorized": True,
+                "is_suspect": False,
+                "is_unknown": False,
+            }],
+            auto_alert=False,
+        )
+
+        # MUST BE 0 - Silent Pass
+        self.assertEqual(len(breaches), 0, "Authorized person should pass silently without generating any breaches")
+        engine.delete_zone(zone["id"])
+
+    def test_access_control_suspect_critical_alert(self):
+        """Verify that a flagged suspect entering polygon triggers a CRITICAL suspect alert."""
+        engine = GeofenceEngine()
+        test_cam = "cam-test-access-ctrl"
+        zone = engine.add_zone({
+            "name": "High Security Zone",
+            "cameraId": test_cam,
+            "polygon": [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]],
+            "targetClasses": ["person", "suspect"],
+            "accessMode": "AUTHORIZED_PASS",
+            "cooldownSeconds": 10.0,
+        })
+
+        # Suspect enters polygon
+        breaches = engine.evaluate_tracks(
+            camera_id=test_cam,
+            tracked_objects=[{
+                "track_id": 301,
+                "box": [0.45, 0.5, 0.55, 0.6],
+                "class_name": "suspect",
+                "confidence": 0.95,
+                "suspect_name": "Raja Waseem",
+                "identity_status": "suspect",
+                "is_authorized": False,
+                "is_suspect": True,
+                "is_unknown": False,
+            }],
+            auto_alert=False,
+        )
+
+        self.assertEqual(len(breaches), 1)
+        self.assertEqual(breaches[0]["alertType"], "suspect_breach")
+        self.assertEqual(breaches[0]["severity"], "CRITICAL")
+        self.assertEqual(breaches[0]["suspectName"], "Raja Waseem")
+        engine.delete_zone(zone["id"])
+
+    def test_access_control_unknown_intruder_alert(self):
+        """Verify that an unknown/unregistered person triggers an unknown intrusion alert."""
+        engine = GeofenceEngine()
+        test_cam = "cam-test-access-ctrl"
+        zone = engine.add_zone({
+            "name": "Perimeter Grid Alpha",
+            "cameraId": test_cam,
+            "polygon": [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]],
+            "targetClasses": ["person", "suspect"],
+            "accessMode": "AUTHORIZED_PASS",
+            "cooldownSeconds": 10.0,
+        })
+
+        # Unknown person enters polygon
+        breaches = engine.evaluate_tracks(
+            camera_id=test_cam,
+            tracked_objects=[{
+                "track_id": 401,
+                "box": [0.45, 0.5, 0.55, 0.6],
+                "class_name": "person",
+                "confidence": 0.88,
+                "identity_status": "unknown",
+                "is_authorized": False,
+                "is_suspect": False,
+                "is_unknown": True,
+            }],
+            auto_alert=False,
+        )
+
+        self.assertEqual(len(breaches), 1)
+        self.assertEqual(breaches[0]["alertType"], "unknown_intrusion")
+        engine.delete_zone(zone["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

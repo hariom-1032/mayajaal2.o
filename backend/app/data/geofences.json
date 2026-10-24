@@ -1,5 +1,80 @@
 {
-  "zones": [],
+  "zones": [
+    {
+      "id": "zone-893a194b",
+      "name": "Exclusion Zone 1",
+      "cameraId": "bop-jk-07",
+      "color": "#ef4444",
+      "severity": "CRITICAL",
+      "polygon": [
+        [
+          0.2827,
+          0.7413
+        ],
+        [
+          0.5625,
+          0.681
+        ],
+        [
+          0.869,
+          0.9013
+        ],
+        [
+          0.3371,
+          0.9925
+        ]
+      ],
+      "targetClasses": [
+        "person",
+        "suspect"
+      ],
+      "accessMode": "AUTHORIZED_PASS",
+      "enabled": false,
+      "cooldownSeconds": 15.0,
+      "description": "Custom tactical exclusion zone.",
+      "createdAt": "2026-10-24T11:14:45.069335+00:00",
+      "updatedAt": "2026-10-24T16:01:06.201912+00:00"
+    },
+    {
+      "id": "zone-234b6bb1",
+      "name": "Exclusion Zone 1",
+      "cameraId": "bop-jk-01",
+      "color": "#ef4444",
+      "severity": "CRITICAL",
+      "polygon": [
+        [
+          0.442,
+          0.6268
+        ],
+        [
+          0.6715,
+          0.6117
+        ],
+        [
+          0.6808,
+          0.6628
+        ],
+        [
+          0.3567,
+          0.7019
+        ],
+        [
+          0.3744,
+          0.6313
+        ]
+      ],
+      "targetClasses": [
+        "person",
+        "suspect"
+      ],
+      "accessMode": "AUTHORIZED_PASS",
+      "enabled": false,
+      "cooldownSeconds": 15.0,
+      "description": "Custom tactical exclusion zone.",
+      "createdAt": "2026-10-24T15:32:00.473698+00:00",
+      "updatedAt": "2026-10-24T16:01:06.178427+00:00"
+    }
+  ],
   "tripwires": [],
-  "updated_at": "2026-10-23T17:57:11.498937+00:00"
+  "updated_at": "2026-10-24T16:01:06.229779+00:00"
 }

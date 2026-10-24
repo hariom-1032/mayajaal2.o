@@ -244,12 +244,18 @@ function AlertsContent() {
           <div className="divide-y divide-slate-100">
             {filteredAlerts.map((alert) => {
               const isSuspectAlert = Boolean(alert.suspectName) || alert.className === "suspect";
-              const isBreachAlert =
+              const isBreachAlert = Boolean(
+                alert.category?.startsWith("geofence_") ||
+                alert.category?.startsWith("tripwire_") ||
                 alert.category === "geofence_breach" ||
                 alert.category === "tripwire_violation" ||
                 alert.category === "tripwire_crossing" ||
                 alert.title?.toLowerCase().includes("geofence") ||
-                alert.title?.toLowerCase().includes("tripwire");
+                alert.title?.toLowerCase().includes("tripwire") ||
+                alert.title?.toLowerCase().includes("perimeter") ||
+                alert.title?.toLowerCase().includes("breach") ||
+                alert.title?.toLowerCase().includes("intrusion")
+              );
               const snapshotFullUrl = alert.snapshotUrl
                 ? alert.snapshotUrl.startsWith("http")
                   ? alert.snapshotUrl

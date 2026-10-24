@@ -491,8 +491,8 @@ def stream_generator(
     effective_cam_id = camera_id or resolved_url or rtsp_url
     effective_cam_name = camera_name or protocol or "Live Stream"
 
-    if draw_detections:
-        enable_face_recognition = True
+    if not draw_detections:
+        enable_face_recognition = False
 
     # Initialize AI preprocessor whenever detection model is loaded
     preprocessor = None
@@ -516,6 +516,7 @@ def stream_generator(
     cached_faces: list[dict] = []
     recent_track_breaches: dict[int, tuple[str, str, float]] = {}  # track_id -> (name, type, timestamp)
     face_id_track_map: dict[str, int] = {}  # face identity -> stable synthetic track_id for geofence
+    track_auth_history: dict[int, float] = {}  # track_id -> last_authorized_timestamp for anti-flicker tolerance
     _face_id_counter: list[int] = [0]  # mutable counter via list
     active_breach_name: Optional[str] = None
     active_breach_time: float = 0.0
@@ -608,7 +609,7 @@ def stream_generator(
             #   Frame % 4 == 3 -> Fast pass-through (~5 ms)
 
             # Stage 2: Biometric Facial Recognition (with Distant Person-RoI & Multi-Scale Scanning)
-            if enable_face_recognition:
+            if draw_detections and enable_face_recognition:
                 if frame_count % 4 == 2 or not cached_faces:
                     try:
                         from app.pipeline.face_service import face_service
@@ -678,7 +679,7 @@ def stream_generator(
             # Stage 3: Geofence & Directional Tripwire Evaluation (face-based)
             # Runs on every face-recognition frame (frame_count % 4 == 2) or when faces change.
             # Uses cached_faces converted to geofence-compatible objects with stable synthetic track IDs.
-            if cached_faces:
+            if draw_detections and cached_faces:
                 try:
                     from app.pipeline.geofence_engine import geofence_engine
                     h_fr, w_fr = frame.shape[:2]
@@ -704,15 +705,36 @@ def stream_generator(
                             face_id_track_map[face_key] = _face_id_counter[0]
                         synthetic_tid = face_id_track_map[face_key]
                         f_name = fc.get("name", "Unknown")
-                        is_th = bool(fc.get("is_threat", False))
+                        is_th = bool(fc.get("is_threat", False) or fc.get("is_suspect", False))
+                        is_known = bool(fc.get("is_known", False))
+
+                        now_curr_t = time.time()
+                        is_authorized = is_known and not is_th
+                        if is_authorized:
+                            track_auth_history[synthetic_tid] = now_curr_t
+                        elif synthetic_tid in track_auth_history:
+                            # 1.5s tolerance for momentary head-turns
+                            if (now_curr_t - track_auth_history[synthetic_tid]) < 1.5:
+                                is_authorized = True
+                                is_known = True
+
+                        is_unknown = not is_known
+                        id_status = "authorized" if is_authorized else ("suspect" if is_th else "unknown")
+
                         geofence_objects.append({
                             "box": person_box,
                             "face_box": fc_box,
                             "head_point": [(fx1 + fx2) / (2.0 * max(1, w_fr)), fy2 / float(max(1, h_fr))],
                             "track_id": synthetic_tid,
                             "class_name": "suspect" if is_th else "person",
+                            "identity_status": id_status,
+                            "is_authorized": is_authorized,
+                            "is_suspect": is_th,
+                            "is_unknown": is_unknown,
+                            "person_id": fc.get("id"),
+                            "person_name": f_name if is_known else None,
                             "confidence": float(fc.get("calibrated_conf") or fc.get("match_score") or fc.get("confidence") or 0.85),
-                            "suspect_name": f_name if f_name != "Unknown" else None,
+                            "suspect_name": f_name if is_th else None,
                         })
                     if geofence_objects:
                         breaches = geofence_engine.evaluate_tracks(
@@ -750,7 +772,7 @@ def stream_generator(
                     logger.debug("Geofence face-based evaluation skip: %s", geo_err)
 
             # Draw Biometric Face Overlays (from cached faces)
-            if (enable_face_recognition or draw_detections) and cached_faces:
+            if draw_detections and enable_face_recognition and cached_faces:
                 try:
                     from app.pipeline.face_service import face_service
                     frame = face_service.draw_faces(frame, cached_faces)
@@ -759,7 +781,7 @@ def stream_generator(
 
             # Draw Active Geofence Breach Banner in Top Center
             now_curr = time.time()
-            if active_breach_name and (now_curr - active_breach_time < 4.0):
+            if draw_detections and active_breach_name and (now_curr - active_breach_time < 4.0):
                 h_b, w_b = frame.shape[:2]
                 banner = f"🚨 PERIMETER BREACH DETECTED: {active_breach_name.upper()} 🚨"
                 (bw, bh), _ = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
@@ -1038,8 +1060,9 @@ def get_live_stream(
     Stream live RTSP or IP Webcam CCTV camera feed as multipart/x-mixed-replace (MJPEG)
     for native, zero-plugin display in any web browser.
     """
-    if draw_detections:
-        enable_face_recognition = True
+    # When draw_detections is False (Raw Stream mode), completely disable face recognition and all AI
+    if not draw_detections:
+        enable_face_recognition = False
 
     sid = session_id or str(uuid.uuid4())
     stop_event = threading.Event()

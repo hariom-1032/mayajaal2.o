@@ -30,6 +30,7 @@ class ZoneCreateRequest(BaseModel):
     severity: str = Field("CRITICAL", description="CRITICAL, HIGH, MEDIUM, or LOW")
     polygon: list[list[float]] = Field(..., min_items=3, description="List of [x, y] normalized vertices")
     targetClasses: list[str] = Field(default=["person", "car", "truck", "suspect"])
+    accessMode: Optional[str] = Field("AUTHORIZED_PASS", description="AUTHORIZED_PASS, ALL_ALERTS, or SUSPECT_ONLY")
     enabled: bool = Field(True)
     cooldownSeconds: float = Field(20.0, ge=1.0, le=300.0)
     description: Optional[str] = None
@@ -42,6 +43,7 @@ class ZoneUpdateRequest(BaseModel):
     severity: Optional[str] = None
     polygon: Optional[list[list[float]]] = None
     targetClasses: Optional[list[str]] = None
+    accessMode: Optional[str] = None
     enabled: Optional[bool] = None
     cooldownSeconds: Optional[float] = None
     description: Optional[str] = None
@@ -56,6 +58,7 @@ class TripwireCreateRequest(BaseModel):
     p2: list[float] = Field(..., min_items=2, max_items=2, description="End point [x, y] normalized")
     direction: str = Field("FORWARD", description="FORWARD, REVERSE, or BIDIRECTIONAL")
     targetClasses: list[str] = Field(default=["person", "suspect"])
+    accessMode: Optional[str] = Field("AUTHORIZED_PASS", description="AUTHORIZED_PASS, ALL_ALERTS, or SUSPECT_ONLY")
     enabled: bool = Field(True)
     cooldownSeconds: float = Field(15.0, ge=1.0, le=300.0)
     description: Optional[str] = None
@@ -70,6 +73,7 @@ class TripwireUpdateRequest(BaseModel):
     p2: Optional[list[float]] = None
     direction: Optional[str] = None
     targetClasses: Optional[list[str]] = None
+    accessMode: Optional[str] = None
     enabled: Optional[bool] = None
     cooldownSeconds: Optional[float] = None
     description: Optional[str] = None
@@ -81,6 +85,11 @@ class EvaluateTrackItem(BaseModel):
     className: str = Field("person")
     confidence: float = Field(0.95, ge=0.0, le=1.0)
     suspectName: Optional[str] = None
+    personName: Optional[str] = None
+    identityStatus: Optional[str] = None
+    isAuthorized: Optional[bool] = None
+    isSuspect: Optional[bool] = None
+    isUnknown: Optional[bool] = None
 
 
 class EvaluateRequest(BaseModel):
@@ -184,6 +193,11 @@ async def evaluate_geofences(payload: EvaluateRequest) -> dict[str, Any]:
             "class_name": t.className,
             "confidence": t.confidence,
             "suspect_name": t.suspectName,
+            "person_name": t.personName,
+            "identity_status": t.identityStatus,
+            "is_authorized": t.isAuthorized,
+            "is_suspect": t.isSuspect,
+            "is_unknown": t.isUnknown,
         }
         for t in payload.tracks
     ]

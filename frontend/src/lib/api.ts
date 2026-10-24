@@ -843,7 +843,18 @@ export const api = {
 
   async evaluateGeofences(payload: {
     cameraId: string;
-    tracks: Array<{ trackId: number; box: number[]; className?: string; confidence?: number; suspectName?: string }>;
+    tracks: Array<{
+      trackId: number;
+      box: number[];
+      className?: string;
+      confidence?: number;
+      suspectName?: string;
+      personName?: string;
+      identityStatus?: string;
+      isAuthorized?: boolean;
+      isSuspect?: boolean;
+      isUnknown?: boolean;
+    }>;
     dispatchAlerts?: boolean;
   }): Promise<GeofenceEvaluateResponse> {
     return request<GeofenceEvaluateResponse>("/api/geofences/evaluate", {

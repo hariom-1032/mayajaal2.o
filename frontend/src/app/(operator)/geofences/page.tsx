@@ -35,6 +35,13 @@ import {
   Link2,
   Wifi,
   WifiOff,
+  Filter,
+  Search,
+  Power,
+  Zap,
+  Cpu,
+  CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 import { useCameras } from "@/lib/camerasStore";
 import { useAlerts } from "@/lib/alertsStore";
@@ -166,9 +173,26 @@ export default function GeofencesPage() {
     return "/images/cameras/bop-jk-01.jpg";
   }, [selectedCamId]);
 
-  // Loaded Geofences
-  const [zones, setZones] = useState<GeofenceZone[]>([]);
-  const [tripwires, setTripwires] = useState<DirectionalTripwire[]>([]);
+  // Loaded Geofences (All barriers across all cameras in the network)
+  const [allZones, setAllZones] = useState<GeofenceZone[]>([]);
+  const [allTripwires, setAllTripwires] = useState<DirectionalTripwire[]>([]);
+
+  // Filtered geofences for the currently focused camera on the live canvas
+  const zones = useMemo(() => {
+    return allZones.filter((z) => (z.cameraId || "bop-jk-01") === selectedCamId);
+  }, [allZones, selectedCamId]);
+
+  const tripwires = useMemo(() => {
+    return allTripwires.filter((w) => (w.cameraId || "bop-jk-01") === selectedCamId);
+  }, [allTripwires, selectedCamId]);
+
+  // Global Geofence Registry Filter & Search state
+  const [globalFilterType, setGlobalFilterType] = useState<
+    "all" | "active" | "disabled" | "zones" | "tripwires"
+  >("all");
+  const [globalFilterCamera, setGlobalFilterCamera] = useState<string>("all");
+  const [globalSearchQuery, setGlobalSearchQuery] = useState<string>("");
+
   const [isLoading, setIsLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
@@ -189,6 +213,8 @@ export default function GeofencesPage() {
   const [simPos, setSimPos] = useState<[number, number]>([0.5, 0.2]);
   const [simPrevPos, setSimPrevPos] = useState<[number, number]>([0.5, 0.1]);
   const [simBreaches, setSimBreaches] = useState<GeofenceBreachEvent[]>([]);
+  const [simIdentity, setSimIdentity] = useState<"suspect" | "unknown" | "authorized">("suspect");
+  const [simSilentPassMsg, setSimSilentPassMsg] = useState<string | null>(null);
 
   // Editor Form Drawer state
   const [editName, setEditName] = useState("");
@@ -196,24 +222,26 @@ export default function GeofencesPage() {
   const [editColor, setEditColor] = useState("#ef4444");
   const [editDirection, setEditDirection] = useState<TripwireDirection>("FORWARD");
   const [editClasses, setEditClasses] = useState<string[]>(["person", "suspect"]);
+  const [editAccessMode, setEditAccessMode] = useState<string>("AUTHORIZED_PASS");
   const [editCooldown, setEditCooldown] = useState(15);
   const [editDescription, setEditDescription] = useState("");
 
   const canvasRef = useRef<SVGSVGElement>(null);
 
-  // ── Load Geofences from Backend ──────────────────────────────────────────
+  // ── Load All Global Geofences from Backend ──────────────────────────────
   const fetchGeofences = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.getGeofences(selectedCamId);
-      if (res?.zones) setZones(res.zones);
-      if (res?.tripwires) setTripwires(res.tripwires);
+      // Call with no cameraId filter to load ALL global barriers across all cameras
+      const res = await api.getGeofences();
+      if (res?.zones) setAllZones(res.zones);
+      if (res?.tripwires) setAllTripwires(res.tripwires);
     } catch (err) {
       console.warn("Using local or fallback geofences data:", err);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedCamId]);
+  }, []);
 
   useEffect(() => {
     fetchGeofences();
@@ -224,13 +252,18 @@ export default function GeofencesPage() {
     if (!alerts || alerts.length === 0) return;
     const latest = alerts[0];
     const isRecent = latest.timestamp ? (Date.now() - latest.timestamp < 6000) : true;
-    const isGeofenceAlert =
+    const isGeofenceAlert = Boolean(
+      latest.category?.startsWith("geofence_") ||
+      latest.category?.startsWith("tripwire_") ||
       latest.category === "geofence_breach" ||
       latest.category === "tripwire_violation" ||
+      latest.category === "tripwire_crossing" ||
       latest.title?.toLowerCase().includes("geofence") ||
       latest.title?.toLowerCase().includes("tripwire") ||
       latest.title?.toLowerCase().includes("breach") ||
-      latest.title?.toLowerCase().includes("perimeter");
+      latest.title?.toLowerCase().includes("perimeter") ||
+      latest.title?.toLowerCase().includes("intrusion")
+    );
 
     if (isRecent && isGeofenceAlert) {
       const matchedZone = zones.find(
@@ -270,7 +303,7 @@ export default function GeofencesPage() {
   // Auto-sync any local or newly created zones/wires to the FastAPI backend so stream_generator evaluates them
   useEffect(() => {
     const syncUnsaved = async () => {
-      for (const z of zones) {
+      for (const z of allZones) {
         if (z.id.startsWith("zone-local-")) {
           try {
             const res = await api.createGeofenceZone({
@@ -284,14 +317,14 @@ export default function GeofencesPage() {
               description: z.description,
             });
             if (res?.zone) {
-              setZones((prev) => prev.map((item) => (item.id === z.id ? res.zone : item)));
+              setAllZones((prev) => prev.map((item) => (item.id === z.id ? res.zone : item)));
             }
           } catch (err) {
             console.debug("Auto-sync zone retry later:", err);
           }
         }
       }
-      for (const w of tripwires) {
+      for (const w of allTripwires) {
         if (w.id.startsWith("wire-local-")) {
           try {
             const res = await api.createTripwire({
@@ -307,7 +340,7 @@ export default function GeofencesPage() {
               description: w.description,
             });
             if (res?.tripwire) {
-              setTripwires((prev) => prev.map((item) => (item.id === w.id ? res.tripwire : item)));
+              setAllTripwires((prev) => prev.map((item) => (item.id === w.id ? res.tripwire : item)));
             }
           } catch (err) {
             console.debug("Auto-sync tripwire retry later:", err);
@@ -316,7 +349,7 @@ export default function GeofencesPage() {
       }
     };
     syncUnsaved();
-  }, [zones, tripwires, selectedCamId]);
+  }, [allZones, allTripwires, selectedCamId]);
 
   // Sync selected entity details into edit form
   useEffect(() => {
@@ -328,6 +361,7 @@ export default function GeofencesPage() {
       setEditSeverity(z.severity);
       setEditColor(z.color);
       setEditClasses(z.targetClasses || ["person"]);
+      setEditAccessMode(z.accessMode || "AUTHORIZED_PASS");
       setEditCooldown(z.cooldownSeconds || 20);
       setEditDescription(z.description || "");
       return;
@@ -340,6 +374,7 @@ export default function GeofencesPage() {
       setEditColor(w.color);
       setEditDirection(w.direction);
       setEditClasses(w.targetClasses || ["person"]);
+      setEditAccessMode(w.accessMode || "AUTHORIZED_PASS");
       setEditCooldown(w.cooldownSeconds || 15);
       setEditDescription(w.description || "");
     }
@@ -378,13 +413,14 @@ export default function GeofencesPage() {
             severity: editSeverity || "CRITICAL",
             polygon: activePoints,
             targetClasses: editClasses,
+            accessMode: (editAccessMode as any) || "AUTHORIZED_PASS",
             cooldownSeconds: editCooldown,
             description: "Custom tactical exclusion zone.",
           };
           try {
             const res = await api.createGeofenceZone(newZonePayload);
             if (res?.zone) {
-              setZones((prev) => [...prev, res.zone]);
+              setAllZones((prev) => [...prev, res.zone]);
               setSelectedEntityId(res.zone.id);
             }
           } catch {
@@ -393,7 +429,7 @@ export default function GeofencesPage() {
               ...newZonePayload,
               enabled: true,
             };
-            setZones((prev) => [...prev, fallbackZone]);
+            setAllZones((prev) => [...prev, fallbackZone]);
             setSelectedEntityId(fallbackZone.id);
           }
           setActivePoints([]);
@@ -411,7 +447,7 @@ export default function GeofencesPage() {
         const p1 = activePoints[0];
         const p2: [number, number] = [nx, ny];
         const newWirePayload = {
-          name: `Tripwire Barrier ${tripwires.length + 1}`,
+          name: `Tripwire Barrier ${allTripwires.length + 1}`,
           cameraId: selectedCamId,
           color: editColor || "#dc2626",
           severity: editSeverity || "CRITICAL",
@@ -419,13 +455,14 @@ export default function GeofencesPage() {
           p2,
           direction: editDirection,
           targetClasses: editClasses,
+          accessMode: (editAccessMode as any) || "AUTHORIZED_PASS",
           cooldownSeconds: editCooldown,
           description: "High-sensitivity border tripwire barrier.",
         };
         try {
           const res = await api.createTripwire(newWirePayload);
           if (res?.tripwire) {
-            setTripwires((prev) => [...prev, res.tripwire]);
+            setAllTripwires((prev) => [...prev, res.tripwire]);
             setSelectedEntityId(res.tripwire.id);
           }
         } catch {
@@ -434,7 +471,7 @@ export default function GeofencesPage() {
             ...newWirePayload,
             enabled: true,
           };
-          setTripwires((prev) => [...prev, fallbackWire]);
+          setAllTripwires((prev) => [...prev, fallbackWire]);
           setSelectedEntityId(fallbackWire.id);
         }
         setActivePoints([]);
@@ -458,7 +495,7 @@ export default function GeofencesPage() {
     if (draggedVertex) {
       const [nx, ny] = coords;
       if (draggedVertex.entityType === "zone") {
-        setZones((prev) =>
+        setAllZones((prev) =>
           prev.map((z) => {
             if (z.id !== draggedVertex.entityId) return z;
             const updated = [...z.polygon];
@@ -467,7 +504,7 @@ export default function GeofencesPage() {
           })
         );
       } else if (draggedVertex.entityType === "tripwire") {
-        setTripwires((prev) =>
+        setAllTripwires((prev) =>
           prev.map((w) => {
             if (w.id !== draggedVertex.entityId) return w;
             if (draggedVertex.index === 0) return { ...w, p1: [nx, ny] };
@@ -483,22 +520,31 @@ export default function GeofencesPage() {
     setSimPrevPos(simPos);
     setSimPos(newPos);
 
+    const isAuth = simIdentity === "authorized";
+    const isSusp = simIdentity === "suspect";
+    const isUnk = simIdentity === "unknown";
+
     // Call backend evaluator
     try {
       const evalRes = await api.evaluateGeofences({
         cameraId: selectedCamId,
         tracks: [
           {
-            trackId: 901,
+            trackId: isAuth ? 801 : isSusp ? 901 : 902,
             box: [
               Math.max(0, newPos[0] - 0.03),
               Math.max(0, newPos[1] - 0.06),
               Math.min(1, newPos[0] + 0.03),
               newPos[1], // bottom footpoint
             ],
-            className: "suspect",
-            confidence: 0.98,
-            suspectName: "Simulated Intruder #901",
+            className: isSusp ? "suspect" : "person",
+            confidence: isAuth ? 0.99 : 0.92,
+            suspectName: isSusp ? "Simulated Suspect #901" : undefined,
+            personName: isAuth ? "Hariom (Staff)" : undefined,
+            identityStatus: simIdentity,
+            isAuthorized: isAuth,
+            isSuspect: isSusp,
+            isUnknown: isUnk,
           },
         ],
         dispatchAlerts: true,
@@ -506,21 +552,40 @@ export default function GeofencesPage() {
 
       if (evalRes?.breaches && evalRes.breaches.length > 0) {
         setSimBreaches(evalRes.breaches);
+        setSimSilentPassMsg(null);
 
         // Visual / Audio feedback
         const primary = evalRes.breaches[0];
         addAlert({
-          title: `Intrusion Breach: ${primary.name}`,
+          title:
+            primary.alertType === "suspect_breach"
+              ? `🚨 Suspect Breach: ${primary.suspectName || "Flagged Target"}`
+              : `⚠️ Perimeter Intrusion: ${primary.name}`,
           location: `Camera ${selectedCamId} • Perimeter Fence`,
           severity: primary.severity === "CRITICAL" ? "High" : "Medium",
           cameraId: selectedCamId,
-          suspectName: "Simulated Intruder #901",
+          suspectName: isSusp ? "Simulated Suspect #901" : undefined,
           threatLevel: primary.severity,
-          category: primary.type === "zone_breach" ? "geofence_breach" : "tripwire_violation",
+          category:
+            primary.alertType === "suspect_breach"
+              ? "geofence_suspect_breach"
+              : "geofence_unknown_intrusion",
           notes: `Tactical simulation triggered ${primary.type} at (${newPos[0].toFixed(2)}, ${newPos[1].toFixed(2)})`,
         });
 
         setTimeout(() => setSimBreaches([]), 4500);
+      } else if (isAuth) {
+        // Check if inside any authorized pass zone for instant visual feedback
+        const insideAuthZone = zones.find(
+          (z) =>
+            z.enabled &&
+            (z.accessMode || "AUTHORIZED_PASS") === "AUTHORIZED_PASS" &&
+            pointInPoly(newPos[0], newPos[1], z.polygon)
+        );
+        if (insideAuthZone) {
+          setSimSilentPassMsg(`✓ Silent Pass: Staff permitted inside ${insideAuthZone.name}`);
+          setTimeout(() => setSimSilentPassMsg(null), 3000);
+        }
       }
     } catch {
       // Fallback in-browser evaluation
@@ -530,21 +595,31 @@ export default function GeofencesPage() {
 
   const evaluateClientSimulation = (pPrev: [number, number], pCurr: [number, number]) => {
     const detected: GeofenceBreachEvent[] = [];
+    const isAuth = simIdentity === "authorized";
+    const isSusp = simIdentity === "suspect";
 
     // Check Zones
     zones.forEach((z) => {
       if (!z.enabled) return;
+      const mode = z.accessMode || "AUTHORIZED_PASS";
+      if (mode === "AUTHORIZED_PASS" && isAuth) return; // Silent pass for authorized staff
+      if (mode === "SUSPECT_ONLY" && !isSusp) return;   // Only suspects trigger
+
       if (pointInPoly(pCurr[0], pCurr[1], z.polygon)) {
         detected.push({
           type: "zone_breach",
+          alertType: isSusp ? "suspect_breach" : "unknown_intrusion",
           zoneId: z.id,
           name: z.name,
           cameraId: selectedCamId,
-          trackId: 901,
-          className: "suspect",
-          confidence: 0.98,
+          trackId: isAuth ? 801 : isSusp ? 901 : 902,
+          className: isSusp ? "suspect" : "person",
+          confidence: isAuth ? 0.99 : 0.92,
+          suspectName: isSusp ? "Simulated Suspect #901" : undefined,
+          personName: isAuth ? "Hariom (Staff)" : undefined,
+          identityStatus: simIdentity,
           footpoint: pCurr,
-          severity: z.severity,
+          severity: isSusp ? "CRITICAL" : z.severity,
           timestamp: new Date().toISOString(),
         });
       }
@@ -552,7 +627,19 @@ export default function GeofencesPage() {
 
     if (detected.length > 0) {
       setSimBreaches(detected);
+      setSimSilentPassMsg(null);
       setTimeout(() => setSimBreaches([]), 4500);
+    } else if (isAuth) {
+      const insideAuthZone = zones.find(
+        (z) =>
+          z.enabled &&
+          (z.accessMode || "AUTHORIZED_PASS") === "AUTHORIZED_PASS" &&
+          pointInPoly(pCurr[0], pCurr[1], z.polygon)
+      );
+      if (insideAuthZone) {
+        setSimSilentPassMsg(`✓ Silent Pass: Staff permitted inside ${insideAuthZone.name}`);
+        setTimeout(() => setSimSilentPassMsg(null), 3000);
+      }
     }
   };
 
@@ -573,7 +660,7 @@ export default function GeofencesPage() {
   const handleSaveEntity = async () => {
     if (!selectedEntityId) return;
 
-    const z = zones.find((item) => item.id === selectedEntityId);
+    const z = allZones.find((item) => item.id === selectedEntityId);
     if (z) {
       const updatedZone = {
         ...z,
@@ -581,10 +668,11 @@ export default function GeofencesPage() {
         severity: editSeverity,
         color: editColor,
         targetClasses: editClasses,
+        accessMode: (editAccessMode as any) || "AUTHORIZED_PASS",
         cooldownSeconds: editCooldown,
         description: editDescription,
       };
-      setZones((prev) => prev.map((item) => (item.id === z.id ? updatedZone : item)));
+      setAllZones((prev) => prev.map((item) => (item.id === z.id ? updatedZone : item)));
       try {
         await api.updateGeofenceZone(z.id, updatedZone);
         setSaveStatus("Zone saved successfully!");
@@ -595,7 +683,7 @@ export default function GeofencesPage() {
       return;
     }
 
-    const w = tripwires.find((item) => item.id === selectedEntityId);
+    const w = allTripwires.find((item) => item.id === selectedEntityId);
     if (w) {
       const updatedWire = {
         ...w,
@@ -604,10 +692,11 @@ export default function GeofencesPage() {
         color: editColor,
         direction: editDirection,
         targetClasses: editClasses,
+        accessMode: (editAccessMode as any) || "AUTHORIZED_PASS",
         cooldownSeconds: editCooldown,
         description: editDescription,
       };
-      setTripwires((prev) => prev.map((item) => (item.id === w.id ? updatedWire : item)));
+      setAllTripwires((prev) => prev.map((item) => (item.id === w.id ? updatedWire : item)));
       try {
         await api.updateTripwire(w.id, updatedWire);
         setSaveStatus("Tripwire saved successfully!");
@@ -620,12 +709,12 @@ export default function GeofencesPage() {
 
   const handleDeleteEntity = async (id: string, type: "zone" | "tripwire") => {
     if (type === "zone") {
-      setZones((prev) => prev.filter((z) => z.id !== id));
+      setAllZones((prev) => prev.filter((z) => z.id !== id));
       try {
         await api.deleteGeofenceZone(id);
       } catch {}
     } else {
-      setTripwires((prev) => prev.filter((w) => w.id !== id));
+      setAllTripwires((prev) => prev.filter((w) => w.id !== id));
       try {
         await api.deleteTripwire(id);
       } catch {}
@@ -635,7 +724,7 @@ export default function GeofencesPage() {
 
   const toggleEntityEnabled = async (id: string, type: "zone" | "tripwire") => {
     if (type === "zone") {
-      setZones((prev) =>
+      setAllZones((prev) =>
         prev.map((z) => {
           if (z.id === id) {
             const upd = { ...z, enabled: !z.enabled };
@@ -646,7 +735,7 @@ export default function GeofencesPage() {
         })
       );
     } else {
-      setTripwires((prev) =>
+      setAllTripwires((prev) =>
         prev.map((w) => {
           if (w.id === id) {
             const upd = { ...w, enabled: !w.enabled };
@@ -658,6 +747,131 @@ export default function GeofencesPage() {
       );
     }
   };
+
+  // ── Global Multi-Camera Management Actions ──────────────────────────────
+  const handleIsolateCurrentCamera = async () => {
+    const otherZones = allZones.filter(
+      (z) => (z.cameraId || "bop-jk-01") !== selectedCamId && z.enabled
+    );
+    const otherWires = allTripwires.filter(
+      (w) => (w.cameraId || "bop-jk-01") !== selectedCamId && w.enabled
+    );
+
+    setAllZones((prev) =>
+      prev.map((z) => {
+        if ((z.cameraId || "bop-jk-01") !== selectedCamId) {
+          return { ...z, enabled: false };
+        }
+        return z;
+      })
+    );
+    setAllTripwires((prev) =>
+      prev.map((w) => {
+        if ((w.cameraId || "bop-jk-01") !== selectedCamId) {
+          return { ...w, enabled: false };
+        }
+        return w;
+      })
+    );
+
+    for (const z of otherZones) {
+      api.updateGeofenceZone(z.id, { enabled: false }).catch(() => {});
+    }
+    for (const w of otherWires) {
+      api.updateTripwire(w.id, { enabled: false }).catch(() => {});
+    }
+  };
+
+  const handleDisableAllGlobal = async () => {
+    const activeZ = allZones.filter((z) => z.enabled);
+    const activeW = allTripwires.filter((w) => w.enabled);
+
+    setAllZones((prev) => prev.map((z) => ({ ...z, enabled: false })));
+    setAllTripwires((prev) => prev.map((w) => ({ ...w, enabled: false })));
+
+    for (const z of activeZ) {
+      api.updateGeofenceZone(z.id, { enabled: false }).catch(() => {});
+    }
+    for (const w of activeW) {
+      api.updateTripwire(w.id, { enabled: false }).catch(() => {});
+    }
+  };
+
+  const handleEnableAllGlobal = async () => {
+    const inactiveZ = allZones.filter((z) => !z.enabled);
+    const inactiveW = allTripwires.filter((w) => !w.enabled);
+
+    setAllZones((prev) => prev.map((z) => ({ ...z, enabled: true })));
+    setAllTripwires((prev) => prev.map((w) => ({ ...w, enabled: true })));
+
+    for (const z of inactiveZ) {
+      api.updateGeofenceZone(z.id, { enabled: true }).catch(() => {});
+    }
+    for (const w of inactiveW) {
+      api.updateTripwire(w.id, { enabled: true }).catch(() => {});
+    }
+  };
+
+  const handleFocusCamera = (camId: string, entityId: string) => {
+    setSelectedCamId(camId);
+    setSelectedEntityId(entityId);
+    setToolMode("select");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  // Metrics: active barriers count & estimated load level
+  const activeCount = useMemo(() => {
+    return allZones.filter((z) => z.enabled).length + allTripwires.filter((w) => w.enabled).length;
+  }, [allZones, allTripwires]);
+
+  const loadLevel = useMemo(() => {
+    if (activeCount === 0) {
+      return { label: "ZERO", color: "text-slate-500 bg-slate-100 border-slate-200" };
+    }
+    if (activeCount <= 2) {
+      return { label: "LOW (Optimal)", color: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+    }
+    if (activeCount <= 5) {
+      return { label: "MODERATE", color: "text-blue-700 bg-blue-50 border-blue-200" };
+    }
+    return { label: "HIGH (Multi-Camera Load)", color: "text-amber-700 bg-amber-50 border-amber-200" };
+  }, [activeCount]);
+
+  // Derived filtered global items for the registry list below
+  const filteredGlobalItems = useMemo(() => {
+    type UnifiedBarrier =
+      | (GeofenceZone & { itemType: "zone" })
+      | (DirectionalTripwire & { itemType: "tripwire" });
+
+    const items: UnifiedBarrier[] = [
+      ...allZones.map((z) => ({ ...z, itemType: "zone" as const })),
+      ...allTripwires.map((w) => ({ ...w, itemType: "tripwire" as const })),
+    ];
+
+    return items.filter((item) => {
+      if (globalFilterType === "zones" && item.itemType !== "zone") return false;
+      if (globalFilterType === "tripwires" && item.itemType !== "tripwire") return false;
+      if (globalFilterType === "active" && !item.enabled) return false;
+      if (globalFilterType === "disabled" && item.enabled) return false;
+
+      if (globalFilterCamera !== "all" && (item.cameraId || "bop-jk-01") !== globalFilterCamera) {
+        return false;
+      }
+
+      if (globalSearchQuery.trim()) {
+        const q = globalSearchQuery.toLowerCase();
+        const matchesName = item.name.toLowerCase().includes(q);
+        const matchesCam = (item.cameraId || "").toLowerCase().includes(q);
+        const matchesDesc = (item.description || "").toLowerCase().includes(q);
+        const matchesSev = (item.severity || "").toLowerCase().includes(q);
+        if (!matchesName && !matchesCam && !matchesDesc && !matchesSev) return false;
+      }
+
+      return true;
+    });
+  }, [allZones, allTripwires, globalFilterType, globalFilterCamera, globalSearchQuery]);
 
   // ── Compute Tripwire Direction Normal Vector and Angle ──────────────────
   const getTripwireGeometry = (p1: [number, number], p2: [number, number], dir: TripwireDirection) => {
@@ -1030,6 +1244,13 @@ export default function GeofencesPage() {
                     <span>BREACH DETECTED: {simBreaches[0].name}</span>
                   </div>
                 )}
+                {simSilentPassMsg && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold shadow-lg border border-emerald-400 animate-in fade-in">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{simSilentPassMsg}</span>
+                  </div>
+                )}
+
               </div>
 
               {/* Feed Visual Filter & Source Switcher */}
@@ -1470,22 +1691,56 @@ export default function GeofencesPage() {
                     y1={(simPrevPos[1] - simPos[1]) * 1080}
                     x2={0}
                     y2={0}
-                    stroke="#f43f5e"
+                    stroke={
+                      simIdentity === "authorized"
+                        ? "#10b981"
+                        : simIdentity === "unknown"
+                        ? "#f59e0b"
+                        : "#f43f5e"
+                    }
                     strokeWidth={4}
                     strokeDasharray="6 4"
                   />
-                  <circle r={28} fill="#f43f5e" fillOpacity={0.25} className="animate-ping" />
-                  <circle r={14} fill="#f43f5e" stroke="#ffffff" strokeWidth={3} />
+                  <circle
+                    r={28}
+                    fill={
+                      simIdentity === "authorized"
+                        ? "#10b981"
+                        : simIdentity === "unknown"
+                        ? "#f59e0b"
+                        : "#f43f5e"
+                    }
+                    fillOpacity={0.25}
+                    className="animate-ping"
+                  />
+                  <circle
+                    r={14}
+                    fill={
+                      simIdentity === "authorized"
+                        ? "#10b981"
+                        : simIdentity === "unknown"
+                        ? "#f59e0b"
+                        : "#f43f5e"
+                    }
+                    stroke="#ffffff"
+                    strokeWidth={3}
+                  />
                   <g transform="translate(0, -26)">
                     <rect
-                      x="-65"
+                      x="-80"
                       y="-12"
-                      width="130"
+                      width="160"
                       height="24"
                       rx="6"
                       fill="#020617"
                       fillOpacity="0.9"
-                      stroke="#f43f5e"
+                      stroke={
+                        simIdentity === "authorized"
+                          ? "#10b981"
+                          : simIdentity === "unknown"
+                          ? "#f59e0b"
+                          : "#f43f5e"
+                      }
                       strokeWidth="1.5"
                     />
                     <text
@@ -1497,7 +1752,11 @@ export default function GeofencesPage() {
                       fontWeight="bold"
                       fontFamily="monospace"
                     >
-                      TARGET #901
+                      {simIdentity === "authorized"
+                        ? "STAFF: HARIOM"
+                        : simIdentity === "unknown"
+                        ? "UNKNOWN INTRUDER"
+                        : "SUSPECT #901"}
                     </text>
                   </g>
                 </g>
@@ -1536,7 +1795,47 @@ export default function GeofencesPage() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Identity State Selector */}
+              <div className="flex items-center gap-1 bg-white border border-slate-200 p-0.5 rounded-xl text-[11px] font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setSimIdentity("suspect")}
+                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                    simIdentity === "suspect"
+                      ? "bg-rose-600 text-white shadow-2xs font-bold"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  title="Simulate a flagged suspect (triggers CRITICAL breach alert)"
+                >
+                  🚨 Suspect
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSimIdentity("unknown")}
+                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                    simIdentity === "unknown"
+                      ? "bg-amber-500 text-white shadow-2xs font-bold"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  title="Simulate an unknown/unregistered intruder (triggers intrusion alert)"
+                >
+                  ⚠️ Unknown
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSimIdentity("authorized")}
+                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                    simIdentity === "authorized"
+                      ? "bg-emerald-600 text-white shadow-2xs font-bold"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  title="Simulate authorized staff (silent pass in Authorized Pass zones)"
+                >
+                  ✓ Staff (Silent)
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1563,6 +1862,7 @@ export default function GeofencesPage() {
                 onClick={() => {
                   api.resetGeofenceHistory(selectedCamId);
                   setSimBreaches([]);
+                  setSimSilentPassMsg(null);
                 }}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
               >
@@ -1633,6 +1933,25 @@ export default function GeofencesPage() {
                       </select>
                     </div>
                   )}
+                </div>
+
+                {/* Lightweight Access Control Policy */}
+                <div>
+                  <label className="block text-slate-600 font-semibold mb-1">Access Control</label>
+                  <select
+                    value={editAccessMode}
+                    onChange={(e) => setEditAccessMode(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer text-xs"
+                  >
+                    <option value="AUTHORIZED_PASS">Authorized Pass (Staff silent, alert suspects & unknowns)</option>
+                    <option value="ALL_ALERTS">All Alerts (Standard - alert any person)</option>
+                    <option value="SUSPECT_ONLY">Suspect Only (Ignore staff & unknowns)</option>
+                  </select>
+                  <p className="text-[10px] text-slate-500 mt-1 font-mono">
+                    {editAccessMode === "AUTHORIZED_PASS" && "✓ Staff in database enter silently. Suspects & unknowns trigger alert."}
+                    {editAccessMode === "ALL_ALERTS" && "⚠ Everyone crossing boundary triggers an alert."}
+                    {editAccessMode === "SUSPECT_ONLY" && "⚠ Only flagged database suspects trigger alert."}
+                  </p>
                 </div>
 
                 <div>
@@ -1846,6 +2165,327 @@ export default function GeofencesPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ── ═══ 4. GLOBAL MULTI-CAMERA GEOFENCE & POLYGON REGISTRY ═══ ── */}
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-5 md:p-6 shadow-xs space-y-5">
+        {/* Header & Metrics */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                <Layers className="w-4 h-4" />
+              </div>
+              <h2 className="text-base md:text-lg font-black tracking-tight text-slate-900">
+                Global Multi-Camera Polygon & Barrier Registry
+              </h2>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px] font-mono font-bold border border-slate-200">
+                {allZones.length + allTripwires.length} Total
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-1 max-w-2xl">
+              Active polygons across multiple cameras run continuous inference and increase processing load. Inspect, toggle, or delete them below to focus system resources on specific cameras.
+            </p>
+          </div>
+
+          {/* Quick Actions & Processing Load */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Processing Load Indicator */}
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 shadow-2xs">
+              <Cpu className="w-3.5 h-3.5 text-slate-500" />
+              <div className="text-[11px] font-medium text-slate-600">
+                <span>Inference Load: </span>
+                <span className={`font-mono font-bold px-1.5 py-0.5 rounded text-[10px] border ${loadLevel.color}`}>
+                  {loadLevel.label}
+                </span>
+              </div>
+            </div>
+
+            {/* Isolate Current Camera button */}
+            <button
+              type="button"
+              onClick={handleIsolateCurrentCamera}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+              title="Deactivate all polygons on other cameras to focus inference strictly on the selected camera"
+            >
+              <Crosshair className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Isolate Focused Camera</span>
+            </button>
+
+            {/* Master Disable All */}
+            <button
+              type="button"
+              onClick={handleDisableAllGlobal}
+              disabled={activeCount === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 disabled:opacity-40 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+              title="Temporarily deactivate all geofences network-wide"
+            >
+              <Power className="w-3.5 h-3.5 text-amber-500" />
+              <span>Disable All</span>
+            </button>
+
+            {/* Master Enable All */}
+            <button
+              type="button"
+              onClick={handleEnableAllGlobal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+              title="Activate all configured geofences"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Enable All</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Filter & Search Bar */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Tabs */}
+          <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setGlobalFilterType("all")}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                globalFilterType === "all"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All ({allZones.length + allTripwires.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setGlobalFilterType("active")}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                globalFilterType === "active"
+                  ? "bg-emerald-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              Active ({activeCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setGlobalFilterType("disabled")}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                globalFilterType === "disabled"
+                  ? "bg-slate-800 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Disabled ({allZones.length + allTripwires.length - activeCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setGlobalFilterType("zones")}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                globalFilterType === "zones"
+                  ? "bg-rose-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Polygons ({allZones.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setGlobalFilterType("tripwires")}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                globalFilterType === "tripwires"
+                  ? "bg-blue-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Tripwires ({allTripwires.length})
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Camera Filter Selector */}
+            <select
+              value={globalFilterCamera}
+              onChange={(e) => setGlobalFilterCamera(e.target.value)}
+              className="bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+            >
+              <option value="all">All Cameras ({cameras.length})</option>
+              {cameras.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.id})
+                </option>
+              ))}
+            </select>
+
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                value={globalSearchQuery}
+                onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                placeholder="Filter by name or camera..."
+                className="bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-44 sm:w-56"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Global Barriers Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {filteredGlobalItems.map((item) => {
+            const isZone = item.itemType === "zone";
+            const camId = item.cameraId || "bop-jk-01";
+            const camObj = cameras.find((c) => c.id === camId);
+            const camName = camObj?.name || camId;
+            const isCurrentCamera = camId === selectedCamId;
+
+            return (
+              <div
+                key={item.id}
+                className={`rounded-xl border p-3.5 transition-all space-y-3 ${
+                  item.enabled
+                    ? isCurrentCamera
+                      ? "bg-emerald-50/40 border-emerald-300/80 shadow-2xs ring-1 ring-emerald-500/30"
+                      : "bg-white border-slate-200 shadow-2xs hover:border-slate-300"
+                    : "bg-slate-50/80 border-slate-200/70 opacity-75"
+                }`}
+              >
+                {/* Header: Camera Badge & Active Toggle */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <CameraIcon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span
+                      className="text-xs font-bold text-slate-800 truncate"
+                      title={`${camName} (${camId})`}
+                    >
+                      {camName}
+                    </span>
+                    {isCurrentCamera ? (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                        FOCUSED
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-medium text-slate-500 bg-slate-100 shrink-0">
+                        {camId}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Enable / Disable Switch */}
+                  <button
+                    type="button"
+                    onClick={() => toggleEntityEnabled(item.id, isZone ? "zone" : "tripwire")}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold tracking-tight cursor-pointer transition-all flex items-center gap-1 shrink-0 ${
+                      item.enabled
+                        ? "bg-emerald-600 text-white shadow-2xs hover:bg-emerald-500"
+                        : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                    }`}
+                    title={item.enabled ? "Click to disable this barrier" : "Click to activate this barrier"}
+                  >
+                    <Power className={`w-3 h-3 ${item.enabled ? "text-emerald-200" : "text-slate-400"}`} />
+                    <span>{item.enabled ? "ACTIVE" : "OFF"}</span>
+                  </button>
+                </div>
+
+                {/* Name, Type & Color */}
+                <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className="w-3.5 h-3.5 rounded-full shrink-0 shadow-2xs"
+                      style={{ backgroundColor: item.color || (isZone ? "#ef4444" : "#38bdf8") }}
+                    />
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-slate-900 truncate" title={item.name}>
+                        {item.name}
+                      </h4>
+                      <div className="flex items-center gap-1 text-[10px] font-mono text-slate-500">
+                        {isZone ? (
+                          <span>Polygon ({item.polygon.length} pts)</span>
+                        ) : (
+                          <span>Tripwire ({(item as DirectionalTripwire).direction || "FORWARD"})</span>
+                        )}
+                        <span>•</span>
+                        <span
+                          className={`font-bold uppercase ${
+                            item.severity === "CRITICAL"
+                              ? "text-rose-600"
+                              : item.severity === "HIGH"
+                              ? "text-orange-600"
+                              : "text-amber-600"
+                          }`}
+                        >
+                          {item.severity}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Target Classes Chips & Cooldown */}
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 gap-2">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span
+                      className={`px-1.5 py-0.2 rounded font-semibold text-[9px] ${
+                        item.accessMode === "ALL_ALERTS"
+                          ? "bg-rose-50 text-rose-700"
+                          : item.accessMode === "SUSPECT_ONLY"
+                          ? "bg-amber-50 text-amber-700"
+                          : "bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      {item.accessMode === "ALL_ALERTS" ? "ALL ALERTS" : item.accessMode === "SUSPECT_ONLY" ? "SUSPECT ONLY" : "AUTH PASS"}
+                    </span>
+                    {(item.targetClasses || ["person"]).slice(0, 2).map((cls) => (
+                      <span
+                        key={cls}
+                        className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-medium text-[9px]"
+                      >
+                        {cls}
+                      </span>
+                    ))}
+                    {(item.targetClasses || []).length > 2 && (
+                      <span className="text-slate-400 text-[9px]">
+                        +{(item.targetClasses || []).length - 2}
+                      </span>
+                    )}
+                  </div>
+                  <span className="shrink-0">{item.cooldownSeconds || 15}s cd</span>
+                </div>
+
+                {/* Card Action Buttons: Focus Camera + Delete */}
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleFocusCamera(camId, item.id)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                    title="Switch camera and display on canvas above"
+                  >
+                    <ExternalLink className="w-3 h-3 text-slate-500" />
+                    <span>Focus Camera</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteEntity(item.id, isZone ? "zone" : "tripwire")}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                    title="Delete polygon permanently"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Empty State */}
+        {filteredGlobalItems.length === 0 && (
+          <div className="py-12 text-center text-slate-400 space-y-2 border border-dashed border-slate-200 rounded-xl">
+            <Shield className="w-8 h-8 mx-auto text-slate-300" />
+            <p className="text-xs font-semibold text-slate-600">No barriers match your filter.</p>
+            <p className="text-[11px] text-slate-400">
+              Draw polygons or tripwires on any camera using the Live Studio above.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
